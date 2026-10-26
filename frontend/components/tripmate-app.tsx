@@ -284,12 +284,21 @@ function parseTripProfile(state: TripState) {
   // 1. Budget extraction
   let budget = String(constraints.budget || "").trim();
   if (!budget || budget === "undefined") {
+    const lakhMatch = query.match(/(?:under|within|upto|up to|budget(?:\s*of)?|max)?\s*(?:₹|rs\.?|inr)?\s*([\d.]+)\s*(?:lakhs?|lacs?)\b/i);
+    const kMatch = query.match(/(?:under|within|upto|up to|budget(?:\s*of)?|max)?\s*(?:₹|rs\.?|inr)?\s*([\d.]+)\s*k\b/i);
     const match =
-      query.match(/(?:under|within|upto|up to|budget(?:\s*of)?|max)\s*(?:₹|rs\.?|inr)?\s*(\d[\d,]*)/i) ||
-      query.match(/(\d[\d,]*)\s*(?:₹|rs\.?|inr|rupees?)\b/i) ||
-      query.match(/(?:₹|rs\.?|inr)\s*(\d[\d,]*)/i);
-    if (match) {
-      budget = `₹${match[1].replace(/,/g, "")}`;
+      query.match(/(?:under|within|upto|up to|budget(?:\s*of)?|max)\s*(?:₹|rs\.?|inr)?\s*([\d,]+)/i) ||
+      query.match(/([\d,]+)\s*(?:₹|rs\.?|inr|rupees?)\b/i) ||
+      query.match(/(?:₹|rs\.?|inr)\s*([\d,]+)/i);
+
+    if (lakhMatch) {
+      const val = parseFloat(lakhMatch[1]);
+      budget = `₹${Math.round(val * 100000).toLocaleString("en-IN")}`;
+    } else if (kMatch) {
+      const val = parseFloat(kMatch[1]);
+      budget = `₹${Math.round(val * 1000).toLocaleString("en-IN")}`;
+    } else if (match) {
+      budget = `₹${parseInt(match[1].replace(/,/g, ""), 10).toLocaleString("en-IN")}`;
     } else {
       budget = "₹10,000";
     }

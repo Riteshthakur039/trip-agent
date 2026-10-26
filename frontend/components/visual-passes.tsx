@@ -958,6 +958,48 @@ export function WeatherHorizonCard({
   );
 }
 
+function cleanNumberSpaces(str: string): string {
+  let s = str || "";
+  while (/(\d)\s+(\d)/.test(s)) {
+    s = s.replace(/(\d)\s+(\d)/g, "$1$2");
+  }
+  return s;
+}
+
+function extractSingleAmount(rawStr: string): number {
+  if (!rawStr) return 0;
+  const str = cleanNumberSpaces(rawStr);
+
+  // Prefer INR specific: "₹55,000 - ₹75,000" or "INR 55,000" or "₹1,05,000 - ₹1,40,000"
+  const inrMatch = str.match(
+    /(?:₹|INR|Rs\.?)\s*([\d,]+(?:\.\d+)?)(?:\s*(?:-|–|—|to)\s*(?:₹|INR|Rs\.?)?\s*([\d,]+(?:\.\d+)?))?/i
+  );
+  if (inrMatch) {
+    const low = parseFloat(inrMatch[1].replace(/,/g, ""));
+    if (inrMatch[2]) {
+      const high = parseFloat(inrMatch[2].replace(/,/g, ""));
+      return Math.round((low + high) / 2);
+    }
+    return Math.round(low);
+  }
+
+  // If there's a range without currency symbol, e.g. "55,000 - 75,000"
+  const rangeMatch = str.match(/([\d,]+(?:\.\d+)?)\s*(?:-|–|—|to)\s*([\d,]+(?:\.\d+)?)/);
+  if (rangeMatch) {
+    const low = parseFloat(rangeMatch[1].replace(/,/g, ""));
+    const high = parseFloat(rangeMatch[2].replace(/,/g, ""));
+    return Math.round((low + high) / 2);
+  }
+
+  // Single number (ignore percentage values like "34%")
+  const clean = str.replace(/%[a-z0-9]*/gi, " ");
+  const numMatch = clean.match(/([\d,]+(?:\.\d+)?)/);
+  if (numMatch) {
+    return Math.round(parseFloat(numMatch[1].replace(/,/g, "")));
+  }
+  return 0;
+}
+
 // -----------------------------------------------------------------------------
 // Dynamic Budget Extractor
 // Extracts actual line items & percentages from agent budget tables
@@ -975,8 +1017,11 @@ function extractDynamicBudget({
   destination?: string;
   isOverland?: boolean;
 }) {
-  const combined = `${budgetData}\n${itineraryText}`;
-  const normalized = combined
+  const source = (budgetData && /category|cost|expense|allocation/i.test(budgetData))
+    ? budgetData
+    : itineraryText;
+
+  const normalized = source
     .replace(/[\u2010-\u2015\u2212]/g, "-")
     .replace(/[\u00a0\u202f]/g, " ");
 
@@ -984,18 +1029,19 @@ function extractDynamicBudget({
   const budgetNum = rawClean ? parseInt(rawClean, 10) : 10000;
   const safeTotal = isNaN(budgetNum) || budgetNum <= 0 ? 10000 : budgetNum;
 
-  const colorPalette = ["#06b6d4", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#3b82f6"];
+  const colorPalette = ["#06b6d4", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#3b82f6", "#14b8a6", "#f97316"];
   const parsedItems: Array<{ label: string; amount: number; note?: string }> = [];
 
-  // Isolate the Budget section specifically so we never match random sentences or other sections!
+  // Isolate the Budget section specifically so we never match summary bullet points or other sections!
   const budgetSectionMatch = normalized.match(
-    /(?:Estimated\s*Budget|Budget\s*Summary|Budget\s*Allocation|Cost\s*Breakdown)[\s\S]*?(?:(?:\n\s*#{1,3}\s|\n\s*\d+\.\s*[A-Z]|\n\s*Weather\s*Forecast|\n\s*Quick\s*Tips|\n\s*Tips|$))/i
+    /(?:Estimated\s*Budget|Budget\s*Breakdown|Budget\s*Summary|Budget\s*Allocation|Cost\s*Breakdown)[\s\S]*?(?:(?:\n\s*#{1,3}\s|\n\s*\d+\.\s*[A-Z]|\n\s*Weather\s*Forecast|\n\s*Summary\s*Breakdown|\n\s*Quick\s*Tips|\n\s*Tips|$))/i
   );
-  const budgetBlock = budgetSectionMatch ? budgetSectionMatch[0] : "";
+  const budgetBlock = budgetSectionMatch ? budgetSectionMatch[0] : normalized;
 
   if (budgetBlock) {
     const lines = budgetBlock.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
     let headerIdx = -1;
+    let inrColIdx = -1;
 
     for (let i = 0; i < lines.length; i++) {
       const cols = lines[i].split(/\t| {2,}|\|/).map((c) => c.trim()).filter(Boolean);
@@ -1004,6 +1050,7 @@ function extractDynamicBudget({
         cols.some((c) => /cost|fare|price|amount|expense|allocation/i.test(c))
       ) {
         headerIdx = i;
+        inrColIdx = cols.findIndex((c) => /inr|₹|rupee/i.test(c));
         break;
       }
     }
@@ -1012,10 +1059,12 @@ function extractDynamicBudget({
       for (let r = headerIdx + 1; r < lines.length; r++) {
         if (/^[|\-\s:]+$/.test(lines[r])) continue;
         if (/total/i.test(lines[r])) continue;
+        // Stop if table ended
+        if (!lines[r].includes("|") && !lines[r].includes("\t") && !/\d/.test(lines[r])) break;
 
         let cols = lines[r].split(/\t| {2,}|\|/).map((c) => c.trim()).filter(Boolean);
         if (cols.length < 2) {
-          const rowMatch = lines[r].match(/(.+?)\s+(?:₹|Rs\.?|INR)?\s*([\d\s,]+)(?:\s+(.*))?$/);
+          const rowMatch = lines[r].match(/(.+?)\s+(?:₹|Rs\.?|INR)?\s*([\d\s,]+(?:\s*-\s*[\d\s,]+)?)(?:\s+(.*))?$/);
           if (rowMatch) {
             cols = [rowMatch[1].trim(), rowMatch[2].trim(), (rowMatch[3] || "").trim()];
           }
@@ -1023,8 +1072,15 @@ function extractDynamicBudget({
 
         if (cols.length >= 2) {
           const cat = cols[0].replace(/[*_#|]/g, "").trim();
-          const rawAmt = cols[1].replace(/[^0-9]/g, "");
-          const amt = parseInt(rawAmt, 10);
+          let costCol = "";
+          if (inrColIdx !== -1 && cols[inrColIdx]) {
+            costCol = cols[inrColIdx];
+          } else {
+            const found = cols.slice(1).find((c) => /₹|inr/i.test(c));
+            costCol = found || cols[1];
+          }
+
+          const amt = extractSingleAmount(costCol);
           if (
             cat &&
             amt > 0 &&
@@ -1034,7 +1090,7 @@ function extractDynamicBudget({
             parsedItems.push({
               label: cat,
               amount: amt,
-              note: cols[2] ? cols[2].replace(/[*_#|]/g, "").trim() : `Allocated for ${cat.toLowerCase()}`,
+              note: cols[cols.length - 1] ? cols[cols.length - 1].replace(/[*_#|]/g, "").trim() : `Allocated for ${cat.toLowerCase()}`,
             });
           }
         }
@@ -1044,12 +1100,11 @@ function extractDynamicBudget({
       for (const line of lines) {
         if (/total/i.test(line)) continue;
         const rowMatch = line.match(
-          /(?:^\|?\s*|\b)(Bus[^\n\r₹|]{1,30}|Transit[^\n\r₹|]{1,30}|Flight[^\n\r₹|]{1,30}|Accommodation[^\n\r₹|]{1,30}|Hotel[^\n\r₹|]{1,30}|Stay[^\n\r₹|]{1,30}|Food[^\n\r₹|]{1,30}|Dining[^\n\r₹|]{1,30}|Sightseeing[^\n\r₹|]{1,30}|Local\s*Transport[^\n\r₹|]{1,30}|Activities[^\n\r₹|]{1,30}|Contingency[^\n\r₹|]{1,30}|Emergency[^\n\r₹|]{1,30}|Misc[^\n\r₹|]{1,30})\s*(?:[:•\-\t|]|\s)\s*(?:₹|Rs\.?|INR)?\s*([\d\s,]+)/i
+          /(?:^\|?\s*|\b)(Bus[^\n\r₹|]{1,30}|Transit[^\n\r₹|]{1,30}|Flight[^\n\r₹|]{1,30}|Accommodation[^\n\r₹|]{1,30}|Hotel[^\n\r₹|]{1,30}|Stay[^\n\r₹|]{1,30}|Food[^\n\r₹|]{1,30}|Dining[^\n\r₹|]{1,30}|Sightseeing[^\n\r₹|]{1,30}|Local\s*Transport[^\n\r₹|]{1,30}|Activities[^\n\r₹|]{1,30}|Contingency[^\n\r₹|]{1,30}|Emergency[^\n\r₹|]{1,30}|Misc[^\n\r₹|]{1,30})\s*(?:[:•\-\t|]|\s)\s*(?:₹|Rs\.?|INR)?\s*([\d\s,]+(?:\s*-\s*[\d\s,]+)?)/i
         );
         if (rowMatch) {
           const cat = rowMatch[1].replace(/[:•\-|]/g, "").trim();
-          const rawAmt = rowMatch[2].replace(/[^0-9]/g, "");
-          const amt = parseInt(rawAmt, 10);
+          const amt = extractSingleAmount(rowMatch[2]);
           if (
             cat &&
             amt > 0 &&
