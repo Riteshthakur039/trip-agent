@@ -1124,14 +1124,20 @@ function extractDynamicBudget({
 
   if (parsedItems.length >= 2) {
     const totalAllocated = parsedItems.reduce((acc, it) => acc + it.amount, 0);
-    const scaleBase = totalAllocated > 0 ? totalAllocated : safeTotal;
+    // If the parsed items exceed the user's requested budget ceiling by > 5%,
+    // scale them down proportionally so the financial architecture strictly honors the user's prompt limit!
+    const needsScaling = safeTotal > 0 && totalAllocated > safeTotal * 1.05;
+    const effectiveTotal = needsScaling ? safeTotal : totalAllocated;
 
     return parsedItems.map((item, idx) => {
-      const pct = Math.max(1, Math.round((item.amount / scaleBase) * 100));
+      const scaledAmount = needsScaling
+        ? Math.round(item.amount * (safeTotal / totalAllocated))
+        : item.amount;
+      const pct = Math.max(1, Math.round((scaledAmount / effectiveTotal) * 100));
       return {
         label: item.label,
         pct,
-        amount: item.amount,
+        amount: scaledAmount,
         color: colorPalette[idx % colorPalette.length],
         note: item.note || `Allocated for ${item.label.toLowerCase()}`,
       };

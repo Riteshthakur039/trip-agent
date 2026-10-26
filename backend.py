@@ -826,8 +826,13 @@ Hotel Results:
 Weather Results:
 {_prompt_text(state.get('weather_results', ''), 800)}
 
+CRITICAL BUDGET CEILING REQUIREMENT:
+The MATHEMATICAL SUM of all estimated category expenses (Flights/Transit, Stays, Dining, Local Transport, Activities, Contingency) MUST BE LESS THAN OR EQUAL TO the user's stated budget ({budget_limit}).
+- For example, if the user requested a budget "under INR 2 lakh" (₹2,00,000), you MUST balance and scale the categories so their combined total is <= ₹2,00,000 (e.g. Return flights ~₹50,000-₹60,000, 7 nights hotel ~₹70,000, dining ~₹25,000, transport ~₹20,000, activities ~₹15,000, buffer ~₹10,000).
+- Under NO circumstances should the estimated total exceed {budget_limit}!
+
 Return:
-1. Estimated cost categories (Transit, Stays, Food, Activities)
+1. Estimated cost categories (Transit, Stays, Food, Activities, Misc) strictly summing within {budget_limit}
 2. Budget risk areas
 3. Money-saving suggestions
 4. Overall feasibility
@@ -885,7 +890,11 @@ Budget Results:
 {_prompt_text(state.get('budget_results', ''), 1000)}
 
 CRITICAL BUDGET, GEOGRAPHY AND TRANSIT CONSTRAINTS:
-1. Strict Budget Fit: The accommodation, transit, and activities MUST strictly fit the user's budget ({budget_limit}).
+1. Strict Budget Ceiling & Mathematical Fit:
+   - The user's total budget is {budget_limit}.
+   - The MATHEMATICAL SUM of all items in the "Estimated Budget" table MUST BE LESS THAN OR EQUAL TO {budget_limit}.
+   - Under NO circumstances should the total sum exceed {budget_limit}!
+   - For example, if the user requested a budget "under INR 2 lakh" (₹2,00,000), you MUST ensure all items (Return Flights ~₹50,000-₹60,000, Hotels ~₹60,000-₹75,000, Food ~₹20,000-₹25,000, Transport ~₹15,000, Activities ~₹15,000, Visa/Buffer ~₹10,000) sum up to <= ₹2,00,000! Under NO circumstances should the total be ₹3,00,000+!
    - If the total budget is under ₹10,000 (e.g. ₹5,000 or ₹10,000 INR), recommend clean, verified budget homestays, GMVN/HPTDC lodges, or guesthouses costing under ₹1,500 - ₹2,000 per night. NEVER recommend luxury 5-star hotels that exceed the budget.
 2. Geographical Sanity & Realistic Durations:
    - Calculate realistic overland distance: If distance is > 800 km (e.g. Chandigarh to Assam / Guwahati is ~2,050 km), do NOT describe an impossible 11-hour bus trip. A direct road journey of 2,050 km takes ~40-48 hours. Explicitly note the true overland duration or recommend direct train (e.g. Dibrugarh Express) or flight.
