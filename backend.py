@@ -237,6 +237,90 @@ def _extract_explicit_route(query: str) -> tuple[str, str]:
     return origin.title(), destination.title()
 
 
+def parse_budget_to_number(raw_input: any) -> int:
+    """Parse phrases like '2 lakh', 'under INR 2 lakh', '20 thousand', '₹2,00,000' into integer Rupees."""
+    if not raw_input:
+        return 10000
+    s = str(raw_input).strip()
+
+    # 1. Crore
+    m = re.search(r"(?:(?:under|within|upto|up to|budget(?:\s*of)?|max|with)\s*(?:₹|rs\.?|inr)?\s*)?([\d.]+)\s*(?:crores?|crs?)\b", s, re.I)
+    if m:
+        try:
+            val = float(m.group(1))
+            if val > 0:
+                return round(val * 10000000)
+        except Exception:
+            pass
+
+    # 2. Lakh / Lac
+    m = re.search(r"(?:(?:under|within|upto|up to|budget(?:\s*of)?|max|with)\s*(?:₹|rs\.?|inr)?\s*)?([\d.]+)\s*(?:lakhs?|lacs?)\b", s, re.I)
+    if m:
+        try:
+            val = float(m.group(1))
+            if val > 0:
+                return round(val * 100000)
+        except Exception:
+            pass
+
+    # 3. Thousand / k
+    m = re.search(r"(?:(?:under|within|upto|up to|budget(?:\s*of)?|max|with)\s*(?:₹|rs\.?|inr)?\s*)?([\d.]+)\s*(?:thousands?|k)\b", s, re.I)
+    if m:
+        try:
+            val = float(m.group(1))
+            if val > 0:
+                return round(val * 1000)
+        except Exception:
+            pass
+
+    # 4. Explicit numbers
+    clean = re.sub(r"[\u2010-\u2015\u2212]", "-", s)
+    clean = re.sub(r"[\u00a0\u202f]", " ", clean)
+    while re.search(r"(\d)\s+(\d)", clean):
+        clean = re.sub(r"(\d)\s+(\d)", r"\1\2", clean)
+
+    m = (
+        re.search(r"(?:under|within|upto|up to|budget(?:\s*of)?|max|with)\s*(?:₹|rs\.?|inr)?\s*([\d,]+)", clean, re.I)
+        or re.search(r"(?:₹|INR|Rs\.?)\s*([\d,]+)", clean, re.I)
+        or re.search(r"([\d,]+)\s*(?:₹|rs\.?|inr|rupees?)\b", clean, re.I)
+    )
+    if m:
+        try:
+            val = int(m.group(1).replace(",", ""))
+            if val < 100 and re.search(r"lakh|lac", s, re.I):
+                return val * 100000
+            if val < 100 and re.search(r"thousand", s, re.I):
+                return val * 1000
+            if val > 0:
+                return val
+        except Exception:
+            pass
+
+    # 5. Raw digits
+    m = re.search(r"^([\d,]+)$", clean)
+    if m:
+        try:
+            val = int(m.group(1).replace(",", ""))
+            if val > 0:
+                return val
+        except Exception:
+            pass
+
+    return 10000
+
+
+def _collect_transit_results(state: TravelState) -> str:
+    """Consolidate all available transit results (flights, trains, buses) so none are dropped."""
+    sections = []
+    if state.get("flight_results"):
+        sections.append(f"Flight Corridors & Fares:\n{state['flight_results']}")
+    if state.get("train_results"):
+        sections.append(f"Railway Options:\n{state['train_results']}")
+    if state.get("bus_results"):
+        sections.append(f"Highway Bus Services:\n{state['bus_results']}")
+    return "\n\n".join(sections) if sections else "Standard regional transit"
+
+
 def _run_coroutine_sync(coro):
     """Safely execute an async coroutine synchronously, even inside an active event loop."""
     try:
@@ -390,6 +474,11 @@ User request:
         if explicit_destination:
             constraints["destination"] = explicit_destination
 
+        # Normalize budget constraint to clean numeric INR so all downstream agents receive the exact figure
+        budget_input = str(constraints.get("budget", "")).strip() or query
+        budget_num = parse_budget_to_number(budget_input)
+        constraints["budget"] = f"₹{budget_num:,}"
+
         reasoning = str(parsed.get("reasoning", "")).strip()
         llm_calls += 1
     except Exception as exc:
@@ -414,6 +503,7 @@ User request:
             constraints["origin"] = explicit_origin
         if explicit_destination:
             constraints["destination"] = explicit_destination
+        constraints["budget"] = f"₹{parse_budget_to_number(query):,}"
         reasoning = (
             "Supervisor parsing failed, so the original full travel workflow "
             "was selected as a safe fallback."
@@ -603,9 +693,7 @@ def hotel_agent(state: TravelState):
     dest = constraints.get("destination") or state["user_query"]
     budget = constraints.get("budget", "")
 
-    # Clean numeric budget to tailor search
-    raw_budget = "".join(ch for ch in str(budget) if ch.isdigit())
-    budget_num = int(raw_budget) if raw_budget else 0
+    budget_num = parse_budget_to_number(budget or state.get("user_query", ""))
 
     if 0 < budget_num <= 10000:
         # For tight budgets (e.g. ₹5,000), search for budget homestays under 40% of total budget
@@ -706,8 +794,7 @@ def _generate_fallback_budget(state: TravelState) -> str:
     constraints = state.get("trip_constraints", {})
     dest = str(constraints.get("destination", "")).strip() or "destination"
     budget_raw = str(constraints.get("budget", "")).strip() or "₹10,000"
-    digits = "".join(ch for ch in budget_raw if ch.isdigit())
-    budget_num = int(digits) if digits else 10000
+    budget_num = parse_budget_to_number(budget_raw or state.get("user_query", ""))
 
     transit_cost = int(budget_num * 0.25)
     stay_cost = int(budget_num * 0.40)
@@ -803,7 +890,7 @@ def _generate_fallback_itinerary(state: TravelState) -> str:
 def budget_agent(state: TravelState):
     user_query = state.get("user_query", "")
     constraints = state.get("trip_constraints", {})
-    budget_limit = constraints.get("budget", "the user budget")
+    budget_limit = constraints.get("budget") or f"₹{parse_budget_to_number(user_query):,}"
 
     prompt = f"""
 Analyze whether this trip to {constraints.get('destination', 'the destination')} is realistic for the user's budget ({budget_limit}).
@@ -817,8 +904,8 @@ User Query:
 Trip Constraints:
 {constraints}
 
-Indian Bus Results:
-{_prompt_text(state.get('bus_results', ''), 1200)}
+Transit Results:
+{_prompt_text(_collect_transit_results(state), 1500)}
 
 Hotel Results:
 {_prompt_text(state.get('hotel_results', ''), 1200)}
@@ -827,12 +914,12 @@ Weather Results:
 {_prompt_text(state.get('weather_results', ''), 800)}
 
 CRITICAL BUDGET CEILING REQUIREMENT:
-The MATHEMATICAL SUM of all estimated category expenses (Flights/Transit, Stays, Dining, Local Transport, Activities, Contingency) MUST BE LESS THAN OR EQUAL TO the user's stated budget ({budget_limit}).
-- For example, if the user requested a budget "under INR 2 lakh" (₹2,00,000), you MUST balance and scale the categories so their combined total is <= ₹2,00,000 (e.g. Return flights ~₹50,000-₹60,000, 7 nights hotel ~₹70,000, dining ~₹25,000, transport ~₹20,000, activities ~₹15,000, buffer ~₹10,000).
-- Under NO circumstances should the estimated total exceed {budget_limit}!
+The total sum of all estimated category expenses (Flights/Transit, Stays, Dining, Local Transport, Activities, Contingency) MUST BE LESS THAN OR EQUAL TO the user's budget ceiling ({budget_limit}).
+- Balance the categories so their combined total is <= {budget_limit}.
+- Under NO circumstances should the total sum exceed {budget_limit}!
 
 Return:
-1. Estimated cost categories (Transit, Stays, Food, Activities, Misc) strictly summing within {budget_limit}
+1. Estimated cost categories (Transit, Stays, Food, Activities, Contingency) strictly summing within {budget_limit}
 2. Budget risk areas
 3. Money-saving suggestions
 4. Overall feasibility
@@ -863,7 +950,7 @@ Return:
 def itinerary_agent(state: TravelState):
     user_query = state.get("user_query", "")
     constraints = state.get("trip_constraints", {})
-    budget_limit = constraints.get("budget", "user budget")
+    budget_limit = constraints.get("budget") or f"₹{parse_budget_to_number(user_query):,}"
 
     prompt = f"""
 Create a complete travel itinerary for {constraints.get('destination', 'the destination')}.
@@ -878,7 +965,7 @@ Trip Constraints:
 {constraints}
 
 Transit Results:
-{_prompt_text(state.get('bus_results', '') or state.get('train_results', '') or state.get('flight_results', ''), 1200)}
+{_prompt_text(_collect_transit_results(state), 1500)}
 
 Hotel Results:
 {_prompt_text(state.get('hotel_results', ''), 1200)}
@@ -891,10 +978,10 @@ Budget Results:
 
 CRITICAL BUDGET, GEOGRAPHY AND TRANSIT CONSTRAINTS:
 1. Strict Budget Ceiling & Mathematical Fit:
-   - The user's total budget is {budget_limit}.
+   - The user's total budget ceiling is {budget_limit}.
    - The MATHEMATICAL SUM of all items in the "Estimated Budget" table MUST BE LESS THAN OR EQUAL TO {budget_limit}.
    - Under NO circumstances should the total sum exceed {budget_limit}!
-   - For example, if the user requested a budget "under INR 2 lakh" (₹2,00,000), you MUST ensure all items (Return Flights ~₹50,000-₹60,000, Hotels ~₹60,000-₹75,000, Food ~₹20,000-₹25,000, Transport ~₹15,000, Activities ~₹15,000, Visa/Buffer ~₹10,000) sum up to <= ₹2,00,000! Under NO circumstances should the total be ₹3,00,000+!
+   - For an international trip with budget {budget_limit} (e.g. ₹2,00,000 for Japan), allocate realistic costs across Return Flights (e.g. ~₹55,000-₹65,000), 7 nights Stays (e.g. ~₹65,000-₹75,000), Food & Dining (e.g. ~₹20,000), Local Transit (e.g. ~₹15,000), Activities (e.g. ~₹15,000), and Visa/Buffer (~₹10,000) so they sum up to <= {budget_limit}.
    - If the total budget is under ₹10,000 (e.g. ₹5,000 or ₹10,000 INR), recommend clean, verified budget homestays, GMVN/HPTDC lodges, or guesthouses costing under ₹1,500 - ₹2,000 per night. NEVER recommend luxury 5-star hotels that exceed the budget.
 2. Geographical Sanity & Realistic Durations:
    - Calculate realistic overland distance: If distance is > 800 km (e.g. Chandigarh to Assam / Guwahati is ~2,050 km), do NOT describe an impossible 11-hour bus trip. A direct road journey of 2,050 km takes ~40-48 hours. Explicitly note the true overland duration or recommend direct train (e.g. Dibrugarh Express) or flight.
@@ -906,6 +993,7 @@ CRITICAL BUDGET, GEOGRAPHY AND TRANSIT CONSTRAINTS:
    Include these explicit structured Markdown tables:
    - **Transit Information**:
      | Bus Operator & Service | Boarding Station | Dropping Station | Departure Time | Arrival Time | Ticket Fare | Assigned Seat |
+     (Or for flights: Departure Airport, Arrival Airport, Carrier, Timings, Fare)
    - **Hotel Suggestions**:
      | Accommodation Name | Location | Room Category | Nightly Rate | Check-In & Dining | Key Amenities |
      (Include amenities like Free Wi-Fi, shared kitchen, 24-h reception, hot water geyser, river/mountain view)
@@ -914,7 +1002,7 @@ CRITICAL BUDGET, GEOGRAPHY AND TRANSIT CONSTRAINTS:
      (Provide 3 to 5 distinct days with specific conditions and tailored packing tips)
    - **Estimated Budget**:
      | Category | Estimated Cost (₹) | Notes |
-     (Include Bus/Transit, Accommodation, Food & Dining, Local Transport & Activities, Contingency)
+     (Include Flights/Transit, Accommodation, Food & Dining, Local Transport, Activities, Contingency/Visa - with all amounts strictly summing within {budget_limit})
 
 Create a clear draft that is ready for human review.
 """

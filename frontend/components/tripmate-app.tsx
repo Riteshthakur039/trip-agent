@@ -46,6 +46,7 @@ import {
   FlightBoardingPass,
   LuxuryHotelPass,
   WeatherHorizonCard,
+  parseBudgetToNumber,
 } from "./visual-passes";
 
 const JourneyMap = dynamic(
@@ -282,30 +283,9 @@ function parseTripProfile(state: TripState) {
   const explicitDestination = routeMatch ? routeMatch[2].trim() : "";
 
   // 1. Budget extraction
-  let budget = String(constraints.budget || "").trim();
-  if (!budget || budget === "undefined") {
-    const lakhMatch = query.match(/(?:under|within|upto|up to|budget(?:\s*of)?|max)?\s*(?:₹|rs\.?|inr)?\s*([\d.]+)\s*(?:lakhs?|lacs?)\b/i);
-    const kMatch = query.match(/(?:under|within|upto|up to|budget(?:\s*of)?|max)?\s*(?:₹|rs\.?|inr)?\s*([\d.]+)\s*k\b/i);
-    const match =
-      query.match(/(?:under|within|upto|up to|budget(?:\s*of)?|max)\s*(?:₹|rs\.?|inr)?\s*([\d,]+)/i) ||
-      query.match(/([\d,]+)\s*(?:₹|rs\.?|inr|rupees?)\b/i) ||
-      query.match(/(?:₹|rs\.?|inr)\s*([\d,]+)/i);
-
-    if (lakhMatch) {
-      const val = parseFloat(lakhMatch[1]);
-      budget = `₹${Math.round(val * 100000).toLocaleString("en-IN")}`;
-    } else if (kMatch) {
-      const val = parseFloat(kMatch[1]);
-      budget = `₹${Math.round(val * 1000).toLocaleString("en-IN")}`;
-    } else if (match) {
-      budget = `₹${parseInt(match[1].replace(/,/g, ""), 10).toLocaleString("en-IN")}`;
-    } else {
-      budget = "₹10,000";
-    }
-  } else if (!budget.startsWith("₹") && !budget.toLowerCase().includes("inr") && !budget.startsWith("$")) {
-    const cleanDigits = budget.replace(/[^0-9]/g, "");
-    budget = cleanDigits ? `₹${parseInt(cleanDigits, 10).toLocaleString("en-IN")}` : `₹${budget}`;
-  }
+  const budgetRaw = String(constraints.budget || "").trim();
+  const budgetNum = parseBudgetToNumber(budgetRaw && budgetRaw !== "undefined" ? budgetRaw : query);
+  const budget = `₹${budgetNum.toLocaleString("en-IN")}`;
 
   // 2. Origin & Destination extraction
   let origin = String(constraints.origin || "").trim();

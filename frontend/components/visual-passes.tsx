@@ -119,7 +119,7 @@ function extractDynamicTransit({
   // Strategy B: Key-Value fallback if table was not present or field was header
   if (!operator || /^(boarding|dropping|service|operator)$/i.test(operator)) {
     const opLine = combined.match(/(?:Bus\s*Operator(?:\s*&\s*Service)?|Carrier|Operator)\s*[:|•\-\t]?\s*([A-Za-z0-9\s()/\-–"“”]+?)(?=\s+(?:Boarding|Departure|Fare|\n|$))/i) ||
-                   combined.match(/\b(ASTC|HRTC|UTC|UPRTC|PRTC|CTU|RSRTC|KSRTC|GSRTC|IndiGo|Air India|Vistara)[A-Za-z\s()/\-–]*/i);
+      combined.match(/\b(ASTC|HRTC|UTC|UPRTC|PRTC|CTU|RSRTC|KSRTC|GSRTC|IndiGo|Air India|Vistara)[A-Za-z\s()/\-–]*/i);
     operator = opLine ? opLine[1].replace(/[:•\-|“"”]/g, "").trim() : "";
   }
 
@@ -137,7 +137,7 @@ function extractDynamicTransit({
 
   if (!boardingPoint || /^(dropping|arrival|station)$/i.test(boardingPoint)) {
     const bLine = combined.match(/(?:Boarding\s*(?:Station|Platform|Point)|Departing\s*from)\s*[:|•\-\t]?\s*([^\n\r|\t]+?)(?=\s*(?:Dropping|Departure|Arrival|\n|$))/i) ||
-                  clean.match(/\b(ISBT[A-Za-z0-9\s,()/\-–]+?)(?=\s+(?:Arrival|Dropping|Fare|\n|$))/i);
+      clean.match(/\b(ISBT[A-Za-z0-9\s,()/\-–]+?)(?=\s+(?:Arrival|Dropping|Fare|\n|$))/i);
     boardingPoint = bLine ? bLine[1].replace(/[:•\-|]/g, "").trim() : "";
   }
 
@@ -298,13 +298,13 @@ function extractDynamicHotel({
   // Strategy B: Key-Value fallback if table was not present or field was header
   if (!hotelName || /^(hotel|accommodation|recommend|room|category|nightly|tariff|information)$/i.test(hotelName) || /interpreted/i.test(hotelName)) {
     const hMatch = combined.match(/(?:Guesthouse|Homestay|Hotel)\s*[“"']([^“"'\n\r]+)[”"']/i) ||
-                   combined.match(/\b([A-Z][a-zA-Z\s]{2,25}(?:Hotel|Homestay|Resort|Lodge|Guesthouse|Inn))\b/i);
+      combined.match(/\b([A-Z][a-zA-Z\s]{2,25}(?:Hotel|Homestay|Resort|Lodge|Guesthouse|Inn))\b/i);
     hotelName = hMatch ? (hMatch[1] || hMatch[0]).trim() : `Verified Stay in ${destination}`;
   }
 
   if (!locationTag) {
     const locMatch = combined.match(/(?:Address|Location|Area|Neighborhood)\s*[:|•\-\t]?\s*([^\n\r|\t]+)/i) ||
-                     clean.match(/(?:near|at|in)\s+([A-Z][a-zA-Z\s]{3,28}(?:Road|Mall|Ghat|Jhula|Bazaar|Sector|Nagar|Colony|Valley|Lake|Beach|Tapovan|Ridge|Point|Hill))/i);
+      clean.match(/(?:near|at|in)\s+([A-Z][a-zA-Z\s]{3,28}(?:Road|Mall|Ghat|Jhula|Bazaar|Sector|Nagar|Colony|Valley|Lake|Beach|Tapovan|Ridge|Point|Hill))/i);
     if (locMatch) locationTag = locMatch[1].replace(/[:•\-|]/g, "").trim();
     else locationTag = `Central District, ${destination}`;
   }
@@ -1001,6 +1001,71 @@ function extractSingleAmount(rawStr: string): number {
 }
 
 // -----------------------------------------------------------------------------
+// Universal Budget Parser
+// Correctly converts words like "2 lakh", "under INR 2 lakh", "20 thousand", "₹2,00,000" into numbers
+// -----------------------------------------------------------------------------
+export function parseBudgetToNumber(rawInput: string | number | undefined | null): number {
+  if (!rawInput) return 10000;
+  const str = String(rawInput).trim();
+
+  // 1. Crore, e.g. "1 crore"
+  const croreMatch = str.match(
+    /(?:(?:under|within|upto|up to|budget(?:\s*of)?|max|with)\s*(?:₹|rs\.?|inr)?\s*)?([\d.]+)\s*(?:crores?|crs?)\b/i
+  );
+  if (croreMatch) {
+    const num = parseFloat(croreMatch[1]);
+    if (!isNaN(num) && num > 0) return Math.round(num * 10000000);
+  }
+
+  // 2. Lakh / Lac, e.g. "2 lakh", "under INR 2 lakh", "1.5 Lakhs", "₹2 Lakh"
+  const lakhMatch = str.match(
+    /(?:(?:under|within|upto|up to|budget(?:\s*of)?|max|with)\s*(?:₹|rs\.?|inr)?\s*)?([\d.]+)\s*(?:lakhs?|lacs?)\b/i
+  );
+  if (lakhMatch) {
+    const num = parseFloat(lakhMatch[1]);
+    if (!isNaN(num) && num > 0) return Math.round(num * 100000);
+  }
+
+  // 3. Thousand / k, e.g. "20 thousand", "20k", "with 20 thousand rupee"
+  const thousandMatch = str.match(
+    /(?:(?:under|within|upto|up to|budget(?:\s*of)?|max|with)\s*(?:₹|rs\.?|inr)?\s*)?([\d.]+)\s*(?:thousands?|k)\b/i
+  );
+  if (thousandMatch) {
+    const num = parseFloat(thousandMatch[1]);
+    if (!isNaN(num) && num > 0) return Math.round(num * 1000);
+  }
+
+  // 4. Explicit numbers preceded or followed by currency terms
+  let clean = str.replace(/[\u2010-\u2015\u2212]/g, "-").replace(/[\u00a0\u202f]/g, " ");
+  while (/(\d)\s+(\d)/.test(clean)) {
+    clean = clean.replace(/(\d)\s+(\d)/g, "$1$2");
+  }
+
+  const explicitBudgetMatch =
+    clean.match(/(?:under|within|upto|up to|budget(?:\s*of)?|max|with)\s*(?:₹|rs\.?|inr)?\s*([\d,]+)/i) ||
+    clean.match(/(?:₹|INR|Rs\.?)\s*([\d,]+)/i) ||
+    clean.match(/([\d,]+)\s*(?:₹|rs\.?|inr|rupees?)\b/i);
+
+  if (explicitBudgetMatch) {
+    const num = parseInt(explicitBudgetMatch[1].replace(/,/g, ""), 10);
+    if (!isNaN(num) && num > 0) {
+      if (num < 100 && /lakh|lac/i.test(str)) return num * 100000;
+      if (num < 100 && /thousand/i.test(str)) return num * 1000;
+      return num;
+    }
+  }
+
+  // 5. Fallback pure digits
+  const fallbackDigits = clean.match(/^([\d,]+)$/);
+  if (fallbackDigits) {
+    const num = parseInt(fallbackDigits[1].replace(/,/g, ""), 10);
+    if (!isNaN(num) && num > 0) return num;
+  }
+
+  return 10000;
+}
+
+// -----------------------------------------------------------------------------
 // Dynamic Budget Extractor
 // Extracts actual line items & percentages from agent budget tables
 // -----------------------------------------------------------------------------
@@ -1017,17 +1082,17 @@ function extractDynamicBudget({
   destination?: string;
   isOverland?: boolean;
 }) {
-  const source = (budgetData && /category|cost|expense|allocation/i.test(budgetData))
-    ? budgetData
-    : itineraryText;
+  // Prefer the complete itinerary table if present, otherwise fall back to budgetData
+  const hasItineraryBudget =
+    itineraryText &&
+    /(?:category|item|expense|component)[\s\S]*?(?:cost|fare|price|amount|₹|inr)/i.test(itineraryText);
+  const source = hasItineraryBudget ? itineraryText : (budgetData || itineraryText);
 
   const normalized = source
     .replace(/[\u2010-\u2015\u2212]/g, "-")
     .replace(/[\u00a0\u202f]/g, " ");
 
-  const rawClean = String(totalBudget || "").replace(/[^0-9]/g, "");
-  const budgetNum = rawClean ? parseInt(rawClean, 10) : 10000;
-  const safeTotal = isNaN(budgetNum) || budgetNum <= 0 ? 10000 : budgetNum;
+  const safeTotal = parseBudgetToNumber(totalBudget);
 
   const colorPalette = ["#06b6d4", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#3b82f6", "#14b8a6", "#f97316"];
   const parsedItems: Array<{ label: string; amount: number; note?: string }> = [];
@@ -1072,6 +1137,19 @@ function extractDynamicBudget({
 
         if (cols.length >= 2) {
           const cat = cols[0].replace(/[*_#|]/g, "").trim();
+          // Filter out header words, footer/summary notes, comparisons like "(₹1.98 Lakh <"
+          if (
+            !cat ||
+            cat.length < 2 ||
+            cat.startsWith("(") ||
+            cat.startsWith("<") ||
+            /^(category|cost|expense|item|notes?)$/i.test(cat) ||
+            /\b(total|grand|overall|summary|balance|remaining|ceiling|budget)\b/i.test(cat) ||
+            /lakh|lac|crore|<|>/i.test(cat)
+          ) {
+            continue;
+          }
+
           let costCol = "";
           if (inrColIdx !== -1 && cols[inrColIdx]) {
             costCol = cols[inrColIdx];
@@ -1082,9 +1160,7 @@ function extractDynamicBudget({
 
           const amt = extractSingleAmount(costCol);
           if (
-            cat &&
             amt > 0 &&
-            !/^(category|cost|expense|item|notes?)$/i.test(cat) &&
             !parsedItems.some((it) => it.label.toLowerCase() === cat.toLowerCase())
           ) {
             parsedItems.push({
@@ -1098,7 +1174,14 @@ function extractDynamicBudget({
     } else {
       // Regex lines inside budgetBlock only:
       for (const line of lines) {
-        if (/total/i.test(line)) continue;
+        if (
+          /total/i.test(line) ||
+          /lakh|lac|crore/i.test(line) ||
+          line.trim().startsWith("(") ||
+          line.trim().startsWith("<")
+        ) {
+          continue;
+        }
         const rowMatch = line.match(
           /(?:^\|?\s*|\b)(Bus[^\n\r₹|]{1,30}|Transit[^\n\r₹|]{1,30}|Flight[^\n\r₹|]{1,30}|Accommodation[^\n\r₹|]{1,30}|Hotel[^\n\r₹|]{1,30}|Stay[^\n\r₹|]{1,30}|Food[^\n\r₹|]{1,30}|Dining[^\n\r₹|]{1,30}|Sightseeing[^\n\r₹|]{1,30}|Local\s*Transport[^\n\r₹|]{1,30}|Activities[^\n\r₹|]{1,30}|Contingency[^\n\r₹|]{1,30}|Emergency[^\n\r₹|]{1,30}|Misc[^\n\r₹|]{1,30})\s*(?:[:•\-\t|]|\s)\s*(?:₹|Rs\.?|INR)?\s*([\d\s,]+(?:\s*-\s*[\d\s,]+)?)/i
         );
@@ -1126,13 +1209,12 @@ function extractDynamicBudget({
     const totalAllocated = parsedItems.reduce((acc, it) => acc + it.amount, 0);
     // If the parsed items exceed the user's requested budget ceiling by > 5%,
     // scale them down proportionally so the financial architecture strictly honors the user's prompt limit!
-    const needsScaling = safeTotal > 0 && totalAllocated > safeTotal * 1.05;
+    const needsScaling = safeTotal >= 1000 && totalAllocated > safeTotal * 1.05;
+    const scaleRatio = needsScaling ? safeTotal / totalAllocated : 1;
     const effectiveTotal = needsScaling ? safeTotal : totalAllocated;
 
     return parsedItems.map((item, idx) => {
-      const scaledAmount = needsScaling
-        ? Math.round(item.amount * (safeTotal / totalAllocated))
-        : item.amount;
+      const scaledAmount = Math.round(item.amount * scaleRatio);
       const pct = Math.max(1, Math.round((scaledAmount / effectiveTotal) * 100));
       return {
         label: item.label,
@@ -1202,9 +1284,7 @@ export function BudgetAllocationCard({
 }) {
   const [inrMode, setInrMode] = useState(true);
 
-  const rawClean = String(totalBudget || "").replace(/[^0-9]/g, "");
-  const budgetNum = rawClean ? parseInt(rawClean, 10) : 10000;
-  const safeTotal = isNaN(budgetNum) || budgetNum <= 0 ? 10000 : budgetNum;
+  const safeTotal = parseBudgetToNumber(totalBudget);
 
   const categories = useMemo(
     () =>
