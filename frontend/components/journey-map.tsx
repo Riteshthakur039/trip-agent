@@ -63,6 +63,20 @@ const CITY_COORDINATES: Record<string, Coordinate> = {
   kalka: [30.8357, 76.9333],
   amritsar: [31.634, 74.8723],
   varanasi: [25.3176, 82.9739],
+  lucknow: [26.8467, 80.9462],
+  kanpur: [26.4499, 80.3319],
+  gorakhpur: [26.7606, 83.3732],
+  patna: [25.5941, 85.1376],
+  siliguri: [26.7271, 88.3953],
+  darjeeling: [27.041, 88.2663],
+  gangtok: [27.3314, 88.6138],
+  sikkim: [27.3314, 88.6138],
+  assam: [26.2006, 92.9376],
+  guwahati: [26.1445, 91.7362],
+  dispur: [26.1433, 91.7898],
+  kaziranga: [26.5775, 93.1711],
+  shillong: [25.5788, 91.8933],
+  meghalaya: [25.5788, 91.8933],
   kochi: [9.9312, 76.2673],
   kerala: [9.9312, 76.2673],
   munnar: [10.0889, 77.0595],
@@ -119,7 +133,8 @@ function normalizeName(str: string): string {
 function resolveKnownCoords(location: string | undefined): Coordinate | undefined {
   if (!location) return undefined;
 
-  const normalized = normalizeName(location);
+  const cleaned = location.replace(/^(?:make\s+)?(?:trip\s+)?(?:plan\s+)?(?:for\s+)?(?:from\s+)?/i, "").trim();
+  const normalized = normalizeName(cleaned);
   const exact = CITY_COORDINATES[normalized];
   if (exact) return exact;
 
@@ -131,10 +146,19 @@ function resolveKnownCoords(location: string | undefined): Coordinate | undefine
   );
   if (match) return match[1];
 
-  if (normalized.includes("uttar") || normalized.includes("khand") || normalized.includes("ukhand")) {
+  if (normalized.includes("assam") || normalized.includes("guwahati") || normalized.includes("dispur") || normalized.includes("kaziranga")) {
+    return CITY_COORDINATES["guwahati"] || CITY_COORDINATES["assam"];
+  }
+  if (normalized.includes("siliguri")) {
+    return CITY_COORDINATES["siliguri"];
+  }
+  if (normalized.includes("gorakhpur")) {
+    return CITY_COORDINATES["gorakhpur"];
+  }
+  if (normalized.includes("uttar") || normalized.includes("khand") || normalized.includes("ukhand") || normalized.includes("rishikesh") || normalized.includes("haridwar")) {
     return CITY_COORDINATES["uttarakhand"];
   }
-  if (normalized.includes("himachal") || normalized.includes("hp")) {
+  if (normalized.includes("himachal") || normalized.includes("hp") || normalized.includes("shimla")) {
     return CITY_COORDINATES["shimla"];
   }
 
@@ -271,13 +295,31 @@ export function JourneyMap({
     const knownDestination = resolveKnownCoords(destination);
 
     const originCoord = knownOrigin ?? CITY_COORDINATES["delhi"];
-    const destCoord =
-      knownDestination ??
-      (destination && (destination.toLowerCase().includes("uttar") || destination.toLowerCase().includes("khand"))
-        ? CITY_COORDINATES["uttarakhand"]
-        : knownOrigin
-        ? CITY_COORDINATES["uttarakhand"]
-        : CITY_COORDINATES["tokyo"]);
+    let destCoord = knownDestination;
+    if (!destCoord) {
+      const destLower = (destination || "").toLowerCase();
+      if (destLower.includes("assam") || destLower.includes("guwahati") || destLower.includes("dispur")) {
+        destCoord = CITY_COORDINATES["guwahati"];
+      } else if (destLower.includes("siliguri")) {
+        destCoord = CITY_COORDINATES["siliguri"];
+      } else if (destLower.includes("gorakhpur")) {
+        destCoord = CITY_COORDINATES["gorakhpur"];
+      } else if (destLower.includes("uttar") || destLower.includes("rishikesh") || destLower.includes("haridwar") || destLower.includes("dehradun")) {
+        destCoord = CITY_COORDINATES["uttarakhand"];
+      } else if (destLower.includes("shimla") || destLower.includes("manali")) {
+        destCoord = CITY_COORDINATES["shimla"];
+      } else if (destLower.includes("japan") || destLower.includes("tokyo")) {
+        destCoord = CITY_COORDINATES["tokyo"];
+      } else if (detected.length > 0) {
+        const nonOrigin = detected.filter((d) => normalizeName(d.name) !== normalizeName(origin || ""));
+        destCoord = nonOrigin.length > 0 ? nonOrigin[nonOrigin.length - 1].coords : detected[0].coords;
+      } else {
+        destCoord = CITY_COORDINATES["delhi"];
+      }
+    }
+
+    const cleanOriginName = (origin || "Departure Location").replace(/^(?:make\s+)?(?:trip\s+)?(?:plan\s+)?(?:from\s+)?/i, "").trim();
+    const cleanDestName = (destination || "Destination").replace(/^(?:to\s+)?/i, "").trim();
 
     const points: {
       name: string;
@@ -285,12 +327,12 @@ export function JourneyMap({
       role: "origin" | "destination" | "waypoint";
     }[] = [
       {
-        name: origin || "New Delhi (DEL)",
+        name: cleanOriginName,
         coords: originCoord,
         role: "origin",
       },
       {
-        name: destination || (origin ? "Uttarakhand (Rishikesh Gateway)" : "Tokyo (HND)"),
+        name: cleanDestName,
         coords: destCoord,
         role: "destination",
       },

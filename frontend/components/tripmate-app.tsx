@@ -292,13 +292,18 @@ function parseTripProfile(state: TripState) {
   let origin = String(constraints.origin || "").trim();
   let destination = String(constraints.destination || "").trim();
 
+  // Strip prefixes like "Plan ", "Trip ", "Make " so "Plan Chandigarh" becomes "Chandigarh"
+  origin = origin.replace(/^(?:make\s+)?(?:a\s+)?(?:trip\s+)?(?:plan\s+)?(?:itinerary\s+)?(?:book\s+)?(?:guide\s+)?(?:for\s+)?(?:from\s+)?/i, "").trim();
+  destination = destination.replace(/^(?:to\s+)?/i, "").trim();
+
   if (!origin || origin.toLowerCase() === "india" || origin === "undefined") {
     if (explicitOrigin) {
-      origin = explicitOrigin.charAt(0).toUpperCase() + explicitOrigin.slice(1);
-    } else if (textBlob.includes("delhi")) {
-      origin = "New Delhi";
+      origin = explicitOrigin.replace(/^(?:make\s+)?(?:a\s+)?(?:trip\s+)?(?:plan\s+)?(?:from\s+)?/i, "").trim();
+      origin = origin.charAt(0).toUpperCase() + origin.slice(1);
     } else if (textBlob.includes("chandigarh")) {
       origin = "Chandigarh";
+    } else if (textBlob.includes("delhi")) {
+      origin = "New Delhi";
     } else if (textBlob.includes("mumbai")) {
       origin = "Mumbai";
     } else if (textBlob.includes("bengaluru") || textBlob.includes("bangalore")) {
@@ -310,7 +315,10 @@ function parseTripProfile(state: TripState) {
 
   if (!destination || destination === "undefined") {
     if (explicitDestination) {
-      destination = explicitDestination.charAt(0).toUpperCase() + explicitDestination.slice(1);
+      destination = explicitDestination.replace(/^(?:to\s+)?/i, "").trim();
+      destination = destination.charAt(0).toUpperCase() + destination.slice(1);
+    } else if (textBlob.includes("assam") || textBlob.includes("guwahati")) {
+      destination = "Assam";
     } else if (
       textBlob.includes("uttar") ||
       textBlob.includes("khand") ||
@@ -361,6 +369,12 @@ function parseTripProfile(state: TripState) {
     "kasauli",
     "amritsar",
     "pune",
+    "assam",
+    "guwahati",
+    "siliguri",
+    "gorakhpur",
+    "lucknow",
+    "patna",
   ];
   const internationalKeywords = [
     "japan", "tokyo", "kyoto", "osaka", "singapore", "dubai", "thailand", "bangkok",
@@ -377,10 +391,15 @@ function parseTripProfile(state: TripState) {
       Boolean(state.bus_results && /(?:ASTC|UTC|HRTC|Janrath|Volvo|Bus\s*Operator)/i.test(state.bus_results)) ||
       Boolean(state.train_results && /(?:Express|Rajdhani|Shatabdi|Train\s*No)/i.test(state.train_results));
 
+    const hasBusTable = Boolean(itinerary.match(/Bus\s*Operator|Dropping\s*Station|Boarding\s*Station|ISBT|HRTC|UPSRTC|ASTC|BSRTC/i));
+    const explicitlyWantsBus = textBlob.includes("via bus") || textBlob.includes("by bus") || textBlob.includes("bus transit");
+
     isOverland =
       overlandPlaces.includes(destination.toLowerCase()) ||
       overlandPlaces.includes(origin.toLowerCase()) ||
       hasLiveBusOrTrain ||
+      hasBusTable ||
+      explicitlyWantsBus ||
       (!textBlob.includes("flight") && !textBlob.includes("airplane") && (textBlob.includes("bus") || textBlob.includes("train")));
   }
 

@@ -50,7 +50,16 @@ function hashString(str: string): number {
 }
 
 function getAirportCode(cityName: string): string {
-  const lower = (cityName || "").toLowerCase();
+  const cleanCity = (cityName || "")
+    .replace(/^(?:make\s+)?(?:trip\s+)?(?:plan\s+)?(?:for\s+)?(?:from\s+)?/i, "")
+    .trim();
+  const lower = cleanCity.toLowerCase();
+  if (lower.includes("chandigarh")) return "IXC";
+  if (lower.includes("assam") || lower.includes("guwahati")) return "GAU";
+  if (lower.includes("siliguri") || lower.includes("bagdogra")) return "IXB";
+  if (lower.includes("gorakhpur")) return "GOP";
+  if (lower.includes("lucknow")) return "LKO";
+  if (lower.includes("patna")) return "PAT";
   if (lower.includes("delhi")) return "DEL";
   if (lower.includes("tokyo") || lower.includes("japan")) return "NRT";
   if (lower.includes("osaka") || lower.includes("kansai")) return "KIX";
@@ -66,7 +75,7 @@ function getAirportCode(cityName: string): string {
   if (lower.includes("paris")) return "CDG";
   if (lower.includes("bangkok")) return "BKK";
   if (lower.includes("bali")) return "DPS";
-  return cityName.replace(/[^a-zA-Z]/g, "").slice(0, 3).toUpperCase() || "INT";
+  return cleanCity.replace(/[^a-zA-Z]/g, "").slice(0, 3).toUpperCase() || "INT";
 }
 
 // -----------------------------------------------------------------------------
@@ -190,7 +199,15 @@ function extractDynamicTransit({
       arrTime = legs[0].arrTime;
       if (legs[0].fare) busFare = `${legs[0].fare} / passenger`;
     } else {
-      operator = legs.map(l => l.service.split(" ")[0].replace(/[^A-Za-z]/g, "")).filter(Boolean).slice(0, 4).join(" ➜ ");
+      operator = legs
+        .map((l) => {
+          const raw = l.service.split("(")[0].trim();
+          const clean = raw.replace(/\b(Volvo|Express|Intercity|Janrath|Deluxe|AC|Bus|Transfer)\b/gi, "").trim();
+          return clean.replace(/[^A-Za-z0-9/]/g, "").trim() || raw.split(" ")[0];
+        })
+        .filter(Boolean)
+        .slice(0, 5)
+        .join(" ➜ ");
       boardingPoint = legs[0].from;
       droppingPoint = legs[legs.length - 1].to;
       depTime = legs[0].depTime;
@@ -301,23 +318,39 @@ function extractDynamicTransit({
   else if (/indigo/i.test(operator)) flightNumber = "Flight 6E-1451";
   else flightNumber = `Flight ${serviceCode.slice(0, 2) || "AI"}-${String((seed % 899) + 100)}`;
 
-  const busNumber = isOverland
-    ? `Bus No. ${serviceCode}-${String((seed % 89) + 10).padStart(2, "0")}-${String((seed % 8999) + 1000)}`
-    : flightNumber;
+  const cleanOrigin = origin.replace(/^(?:make\s+)?(?:trip\s+)?(?:plan\s+)?(?:from\s+)?/i, "").split("(")[0].trim();
+  const cleanDest = destination.replace(/^(?:to\s+)?/i, "").split("(")[0].trim();
+
+  const isBusTransit =
+    isOverland ||
+    legs.length > 0 ||
+    legs.some(l => /bus|volvo|express|janrath|hrtc|upsrtc|astc|bsrtc|ctu|metro|terminus|isbt/i.test(l.service) || /isbt|terminus|bus/i.test(l.from) || /isbt|terminus|bus/i.test(l.to)) ||
+    Boolean(combined.match(/Bus\s*Operator|Dropping\s*Station|Boarding\s*Station|ISBT|ASTC|HRTC|UPSRTC|BSRTC/i));
+
+  let busNumber = "";
+  if (legs.length > 1) {
+    busNumber = `Multi-State Highway Transit (${legs.length} Connecting Buses)`;
+  } else if (isBusTransit) {
+    busNumber = `Bus No. ${serviceCode}-${String((seed % 89) + 10).padStart(2, "0")}-${String((seed % 8999) + 1000)}`;
+  } else {
+    busNumber = flightNumber;
+  }
 
   if (!seatNumber) {
     const seatMatch = combined.match(/(?:Seat|Berth)\s*(?:Number|No\.?)?\s*[:|•\-\t]?\s*([0-9]{1,2}[A-F]?|\bSeat\s*[0-9]{1,2}[A-F]?)/i);
-    seatNumber = seatMatch ? seatMatch[1].trim() : (isOverland ? `Seat ${(seed % 28) + 1} (Window Side)` : `Seat ${(seed % 32) + 1}A (Window Side)`);
+    seatNumber = seatMatch ? seatMatch[1].trim() : (isBusTransit ? `Seat ${(seed % 28) + 1} (Window Side)` : `Seat ${(seed % 32) + 1}A (Window Side)`);
   }
   if (!/seat/i.test(seatNumber)) seatNumber = `Seat ${seatNumber}`;
 
   const ticketRef = `TKT-${serviceCode}-${String(seed % 899999 + 100000)}`;
 
   let cabinBadge = "";
-  if (!isOverland) {
-    cabinBadge = /business/i.test(combined) ? "Business Class Airway" : "Economy Class Corridor";
-  } else if (/non-?ac|sleeper/i.test(combined)) {
-    cabinBadge = "Intercity Sleeper (Non-AC)";
+  if (!isBusTransit) {
+    cabinBadge = /business/i.test(combined) ? "Business Class Airway" : "Confirmed Flight";
+  } else if (legs.length > 1) {
+    cabinBadge = `Confirmed Seat · ${legs.length} Connecting Buses`;
+  } else if (/sleeper/i.test(combined)) {
+    cabinBadge = "Intercity AC Sleeper";
   } else if (/volvo/i.test(operator) || /volvo/i.test(clean)) {
     cabinBadge = "2+2 High-Deck Volvo AC";
   } else if (/janrath/i.test(operator) || /janrath/i.test(clean)) {
@@ -325,10 +358,12 @@ function extractDynamicTransit({
   } else if (/deluxe/i.test(operator) || /deluxe/i.test(clean)) {
     cabinBadge = "2+2 Pushback Deluxe AC";
   } else {
-    cabinBadge = `${destination} Intercity Express`;
+    cabinBadge = "Confirmed Bus Seat";
   }
 
-  const transitType = `${origin.split('(')[0].trim()} to ${destination.split('(')[0].trim()} Transit Corridor`;
+  const transitType = isBusTransit
+    ? `${cleanOrigin} to ${cleanDest} Highway Transit Corridor`
+    : `${cleanOrigin} to ${cleanDest} Airway Flight Corridor`;
 
   let flightTerminal = "";
   const flightTerminalMatch = clean.match(/(?:Terminal|Gate)\s*[:|•\-\t]\s*([T\d\sA-Za-z]+?(?=\s+Gate|\n|,|$))/i);
@@ -361,6 +396,7 @@ function extractDynamicTransit({
     flightTerminal,
     boardingZone,
     legs,
+    isBusTransit,
   };
 }
 
@@ -625,10 +661,14 @@ export function FlightBoardingPass({
     [itineraryText, busData, flightData, origin, destination, totalBudget, isOverland]
   );
 
-  if (isOverland) {
-    const originShort = origin.slice(0, 3).toUpperCase();
-    const destShort = destination.slice(0, 3).toUpperCase();
+  const isBusMode = isOverland || transit.isBusTransit;
 
+  const cleanOrig = origin.replace(/^(?:make\s+)?(?:trip\s+)?(?:plan\s+)?(?:from\s+)?/i, "").split("(")[0].trim();
+  const cleanDest = destination.replace(/^(?:to\s+)?/i, "").split("(")[0].trim();
+  const originShort = getAirportCode(cleanOrig);
+  const destShort = getAirportCode(cleanDest);
+
+  if (isBusMode) {
     return (
       <div className="boarding-pass-card">
         <div className="boarding-pass__left">
@@ -662,7 +702,7 @@ export function FlightBoardingPass({
           <div className="pass-route">
             <div className="route-stop">
               <span className="stop-code">{originShort}</span>
-              <span className="stop-name">{origin.split("(")[0].trim()}</span>
+              <span className="stop-name">{cleanOrig}</span>
               <strong className="stop-time">{transit.depTime}</strong>
             </div>
 
@@ -678,7 +718,7 @@ export function FlightBoardingPass({
 
             <div className="route-stop text-right">
               <span className="stop-code">{destShort}</span>
-              <span className="stop-name">{destination.split("(")[0].trim()}</span>
+              <span className="stop-name">{cleanDest}</span>
               <strong className="stop-time">{transit.arrTime}</strong>
             </div>
           </div>
@@ -779,8 +819,8 @@ export function FlightBoardingPass({
   }
 
   // Flight Mode
-  const fromCode = getAirportCode(origin);
-  const toCode = getAirportCode(destination);
+  const fromCode = originShort;
+  const toCode = destShort;
 
   return (
     <div className="boarding-pass-card">
@@ -799,7 +839,7 @@ export function FlightBoardingPass({
         <div className="pass-route">
           <div className="route-stop">
             <span className="stop-code">{fromCode}</span>
-            <span className="stop-name">{origin.split("(")[0].trim()}</span>
+            <span className="stop-name">{cleanOrig}</span>
             <strong className="stop-time">{transit.depTime}</strong>
           </div>
 
@@ -815,7 +855,7 @@ export function FlightBoardingPass({
 
           <div className="route-stop text-right">
             <span className="stop-code">{toCode}</span>
-            <span className="stop-name">{destination.split("(")[0].trim()}</span>
+            <span className="stop-name">{cleanDest}</span>
             <strong className="stop-time">{transit.arrTime}</strong>
           </div>
         </div>

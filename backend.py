@@ -269,8 +269,13 @@ def _extract_explicit_route(query: str) -> tuple[str, str]:
     origin = re.sub(r"\s+", " ", match.group("origin")).strip(" .,-")
     destination = re.sub(r"\s+", " ", match.group("destination")).strip(" .,-")
 
-    # Strip currency words or common prefix particles from origin (e.g. "rupee del" -> "del")
-    origin = re.sub(r"^(?:rupees?|rs\.?|inr|for|under|budget|approx)\s+", "", origin, flags=re.I).strip(" .,-")
+    # Strip currency words, action words, or common prefix particles from origin (e.g. "plan chandigarh" -> "chandigarh", "rupee del" -> "del")
+    origin = re.sub(
+        r"^(?:make\s+)?(?:a\s+)?(?:trip\s+)?(?:plan\s+)?(?:itinerary\s+)?(?:book\s+)?(?:guide\s+)?(?:for\s+)?(?:rupees?|rs\.?|inr|under|budget|approx|from)\s+",
+        "",
+        origin,
+        flags=re.I,
+    ).strip(" .,-")
     destination = re.sub(r"\s+(?:under|within|for|with|via|by)\b.*$", "", destination, flags=re.I).strip(" .,-")
 
     # Discard non-geographic trigger words like "plan", "trip", "travel"
