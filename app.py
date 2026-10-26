@@ -41,7 +41,14 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    ag_ui_graph = await open_ag_ui_backend_resources()
+    try:
+        ag_ui_graph = await asyncio.create_task(open_ag_ui_backend_resources())
+    except Exception as exc:
+        print(f"AG-UI initialization error: {exc}; falling back to MemorySaver.")
+        from langgraph.checkpoint.memory import MemorySaver
+        from backend import graph
+        ag_ui_graph = graph.compile(checkpointer=MemorySaver())
+
     if not any(getattr(route, "path", None) == "/ag-ui" for route in app.routes):
         add_langgraph_fastapi_endpoint(
             app=app,
@@ -60,8 +67,14 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
-        await close_ag_ui_backend_resources()
-        close_backend_resources()
+        try:
+            await asyncio.create_task(close_ag_ui_backend_resources())
+        except Exception:
+            pass
+        try:
+            close_backend_resources()
+        except Exception:
+            pass
 
 
 app = FastAPI(

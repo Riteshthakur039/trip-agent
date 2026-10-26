@@ -1276,18 +1276,26 @@ async def open_ag_ui_backend_resources():
         open=False,
     )
 
-    try:
+    async def _init_pool():
         await _agui_db_pool.open(wait=False)
         await _agui_db_pool.wait(timeout=10)
-        ag_ui_checkpointer = AsyncPostgresSaver(_agui_db_pool)
-        await ag_ui_checkpointer.setup()
+        checkpointer = AsyncPostgresSaver(_agui_db_pool)
+        await checkpointer.setup()
+        return checkpointer
+
+    try:
+        ag_ui_checkpointer = await asyncio.create_task(_init_pool())
         ag_ui_travel_graph = graph.compile(checkpointer=ag_ui_checkpointer)
     except Exception as exc:
         print(
             "AG-UI PostgreSQL is unavailable; using in-memory checkpoints "
             f"for this process. Reason: {exc}"
         )
-        await _agui_db_pool.close()
+        if _agui_db_pool is not None:
+            try:
+                await asyncio.create_task(_agui_db_pool.close(timeout=2))
+            except Exception:
+                pass
         _agui_db_pool = None
         ag_ui_checkpointer = None
         ag_ui_travel_graph = graph.compile(checkpointer=MemorySaver())
@@ -1296,9 +1304,13 @@ async def open_ag_ui_backend_resources():
 
 async def close_ag_ui_backend_resources() -> None:
     """Close async AG-UI database connections during shutdown."""
-
+    global _agui_db_pool
     if _agui_db_pool is not None:
-        await _agui_db_pool.close()
+        try:
+            await asyncio.create_task(_agui_db_pool.close(timeout=2))
+        except Exception:
+            pass
+        _agui_db_pool = None
 
 
 def close_backend_resources() -> None:
