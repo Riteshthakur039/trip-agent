@@ -218,8 +218,34 @@ def _latest_user_query(state: TravelState) -> str:
 
 
 def _extract_explicit_route(query: str) -> tuple[str, str]:
-    """Extract an explicit `from X to Y` route without relying on the LLM."""
+    """Extract an explicit `from X to Y` or `X to Y` route without relying on the LLM."""
 
+    airport_city_map = {
+        "del": "Delhi",
+        "delhi": "Delhi",
+        "new delhi": "New Delhi",
+        "bom": "Mumbai",
+        "mumbai": "Mumbai",
+        "blr": "Bengaluru",
+        "bangalore": "Bengaluru",
+        "ccu": "Kolkata",
+        "calcutta": "Kolkata",
+        "maa": "Chennai",
+        "madras": "Chennai",
+        "hyd": "Hyderabad",
+        "ixc": "Chandigarh",
+        "chandigarh": "Chandigarh",
+        "gau": "Guwahati",
+        "guwahati": "Guwahati",
+        "assam": "Assam",
+        "dxb": "Dubai",
+        "nrt": "Tokyo",
+        "hnd": "Tokyo",
+        "japan": "Japan",
+        "tokyo": "Tokyo",
+    }
+
+    # 1. Pattern: from <origin> to <destination>
     match = re.search(
         r"\bfrom\s+(?P<origin>[^\n,;]+?)\s+to\s+"
         r"(?P<destination>[^\n,;]+?)"
@@ -228,13 +254,32 @@ def _extract_explicit_route(query: str) -> tuple[str, str]:
         flags=re.IGNORECASE,
     )
     if not match:
+        # 2. Pattern: <origin> to <destination> (e.g. "del to japan", "delhi to tokyo", "chandigarh to assam")
+        match = re.search(
+            r"\b(?P<origin>[A-Za-z]+(?:\s+[A-Za-z]+)?)\s+(?:to|->|–|-)\s+"
+            r"(?P<destination>[A-Za-z]+(?:\s+[A-Za-z]+)?)"
+            r"(?=\s+(?:via|by|for|on|with|under|within|during|using)\b|[,;.]|$)",
+            query,
+            flags=re.IGNORECASE,
+        )
+
+    if not match:
         return "", ""
 
     origin = re.sub(r"\s+", " ", match.group("origin")).strip(" .,-")
-    destination = re.sub(r"\s+", " ", match.group("destination")).strip(
-        " .,-"
-    )
-    return origin.title(), destination.title()
+    destination = re.sub(r"\s+", " ", match.group("destination")).strip(" .,-")
+
+    # Strip currency words or common prefix particles from origin (e.g. "rupee del" -> "del")
+    origin = re.sub(r"^(?:rupees?|rs\.?|inr|for|under|budget|approx)\s+", "", origin, flags=re.I).strip(" .,-")
+    destination = re.sub(r"\s+(?:under|within|for|with|via|by)\b.*$", "", destination, flags=re.I).strip(" .,-")
+
+    # Discard non-geographic trigger words like "plan", "trip", "travel"
+    if origin.lower() in {"trip", "plan", "itinerary", "want", "guide", "go", "travel", "need"}:
+        return "", ""
+
+    origin_clean = airport_city_map.get(origin.lower(), origin.title())
+    dest_clean = airport_city_map.get(destination.lower(), destination.title())
+    return origin_clean, dest_clean
 
 
 def parse_budget_to_number(raw_input: any) -> int:
@@ -334,6 +379,106 @@ def _run_coroutine_sync(coro):
             return executor.submit(asyncio.run, coro).result()
 
     return asyncio.run(coro)
+
+
+def check_budget_feasibility(origin: str, destination: str, budget_num: int, user_query: str) -> tuple[bool, str]:
+    """Check if the requested budget or route is physically impossible and provide real-world advisory."""
+    dest_lower = (destination or "").lower()
+    query_lower = (user_query or "").lower()
+    orig_clean = origin.split("(")[0].strip() or "Delhi"
+    dest_clean = destination.split("(")[0].strip() or "Destination"
+
+    # 0. Zero or Free Budget Requests
+    if budget_num == 0 or re.search(r"\b(free|zero|0\s*rupee|no\s*money)\b", query_lower):
+        return False, (
+            f"### ⚠️ Budget Feasibility Advisory · {dest_clean}\n\n"
+            f"Planning an entire travel itinerary from **{orig_clean} to {dest_clean}** with zero budget is not feasible due to mandatory transit, lodging, and sustenance costs.\n\n"
+            f"**Zero-Cost Local Exploration Tips:**\n"
+            f"- Self-guided walking tours in public parks, heritage markets, and architectural quarters.\n"
+            f"- Free-entry cultural museums, state libraries, and spiritual sanctuaries.\n"
+            f"- For travel to {dest_clean}, please provide a realistic budget ceiling (e.g., ₹5,000+ for domestic getaways or ₹70,000+ for international journeys)."
+        )
+
+    # 1. Contradictory travel mode: e.g. international flight destination requested via bus
+    intl_flight_places = [
+        "japan", "tokyo", "kyoto", "osaka", "singapore", "dubai", "thailand", "bangkok",
+        "bali", "indonesia", "vietnam", "paris", "london", "europe", "usa", "america",
+        "maldives", "malaysia", "switzerland", "korea", "seoul", "australia"
+    ]
+    is_intl = any(k in dest_lower or k in query_lower for k in intl_flight_places)
+    wants_bus = bool(re.search(r"\b(bus|buses|road trip|drive|car)\b", query_lower))
+
+    if is_intl and wants_bus:
+        return False, (
+            f"### ⚠️ Geographical Transit Advisory · {dest_clean}\n\n"
+            f"A direct bus or overland road trip from **{orig_clean} to {dest_clean}** is geographically impossible due to maritime and international borders.\n\n"
+            f"**Required Transit Corridor:**\n"
+            f"- **Departure Airport**: Indira Gandhi International Airport (DEL T3), New Delhi\n"
+            f"- **Arrival Airport**: Narita International Airport (NRT) or Haneda Airport (HND), Tokyo\n"
+            f"- **Airlines**: Singapore Airlines, ANA All Nippon Airways, Japan Airlines (JAL), Air India\n"
+            f"- **Flight Duration**: ~8–9 hours direct / 12–14 hours with 1-stop\n\n"
+            f"Please plan this route using international airfare."
+        )
+
+    # 2. Impossible International Budget (e.g. ₹500 to Japan, or < ₹25,000)
+    if is_intl and 0 < budget_num < 25000:
+        return False, (
+            f"### ⚠️ Budget Feasibility Advisory · {dest_clean}\n\n"
+            f"An international journey from **{orig_clean} to {dest_clean}** with a budget of **₹{budget_num:,}** is not physically feasible.\n\n"
+            f"#### Real-World Mandatory International Costs (Per Person):\n"
+            f"| Expense Component | Realistic Cost (INR) | Essential Notes |\n"
+            f"| :--- | :--- | :--- |\n"
+            f"| **Return Economy Flights** | ₹48,000 – ₹65,000 | Delhi ↔ Tokyo (book 3–4 months in advance) |\n"
+            f"| **Tourist Visa Fee** | ₹1,450 | Official Japanese Embassy single-entry fee |\n"
+            f"| **Clean Hostels / Capsule Stays** | ₹2,200 – ₹3,500 / night | Verified clean pods in central districts |\n"
+            f"| **Daily Meals & Water** | ~₹1,500 / day | Ramen, Yoshinoya beef bowls, convenience store bento |\n"
+            f"| **Local Metro / IC Card Transit** | ~₹600 – ₹1,000 / day | Tokyo Metro 72-hour tourist pass |\n"
+            f"| **Recommended Minimum Budget** | **₹70,000 – ₹1,00,000** | Required for a safe, comfortable 5–7 day trip |\n\n"
+            f"---\n\n"
+            f"### 💡 Exciting Weekend Getaways from {orig_clean} within Your ₹{budget_num:,} Budget:\n"
+            f"If your current budget is **₹{budget_num:,}**, here are verified, top-rated local experiences you can embark on right away:\n\n"
+            f"1. **Delhi to Murthal Highway Feasting (HRTC Bus Day Trip)**:\n"
+            f"   - **Transit**: HRTC AC Deluxe bus from ISBT Kashmiri Gate to Murthal (₹80 each way = ₹160).\n"
+            f"   - **Experience**: Giant tandoori stuffed parathas with fresh white butter & sweet lassi at iconic Amrik Sukhdev Dhaba (₹250).\n"
+            f"   - **Total Spend**: **~₹440** · *Fits perfectly within ₹{budget_num:,}!* \n\n"
+            f"2. **Old Delhi Heritage & Street Culinary Trail**:\n"
+            f"   - **Transit**: Delhi Metro token to Chandni Chowk (₹40 each way = ₹80).\n"
+            f"   - **Experience**: Walk through historic Jama Masjid & Red Fort precincts, crisp parathas at Parathe Wali Gali (₹200), and hot Rabri Jalebi at Dariba Kalan (₹80).\n"
+            f"   - **Total Spend**: **~₹360** · *Well within ₹{budget_num:,}!* \n\n"
+            f"3. **Sultanpur National Bird Sanctuary & Lake Hike**:\n"
+            f"   - **Transit**: Metro to HUDA City Centre + local shared EV / bus to Sultanpur (₹100 return).\n"
+            f"   - **Experience**: Scenic wetland nature walk, binoculars trail, entry ticket (₹50), and packed picnic lunch (₹200).\n"
+            f"   - **Total Spend**: **~₹350**."
+        )
+
+    # 3. Extreme Domestic Long-Haul Budget (e.g. Chandigarh to Assam with < ₹2,000)
+    is_assam = any(k in dest_lower or k in query_lower for k in ["assam", "guwahati", "kaziranga", "northeast"])
+    if is_assam and 0 < budget_num < 2000:
+        return False, (
+            f"### ⚠️ Budget Feasibility Advisory · {orig_clean} to {dest_clean}\n\n"
+            f"Traveling 2,050 km from **{orig_clean} to {dest_clean}** on a total budget of **₹{budget_num:,}** is not feasible.\n\n"
+            f"**Realistic Transit Minimums:**\n"
+            f"- **Multi-Leg Connecting Buses (4 Legs)**: Minimum ~₹3,070 one-way.\n"
+            f"- **Direct Train (15904 Dibrugarh Express)**: ₹850 (Sleeper Class) or ₹2,250 (3AC).\n"
+            f"- **Minimum Recommended Budget**: **₹8,000 – ₹12,000** for a basic 3–4 day trip with food and lodge stays.\n\n"
+            f"**Nearby Alternative within ₹{budget_num:,} from {orig_clean}:**\n"
+            f"- **Pinjore Gardens & Timber Trail (Parwanoo)**: CTU local bus from ISBT 43 (₹45 each way), Mughal garden entry (₹30), picnic snacks (₹250) $\\rightarrow$ **Total: ~₹370**."
+        )
+
+    # 4. Extreme Domestic Overnight Trip Budget (< ₹1,000)
+    if 0 < budget_num < 1000 and not is_intl and any(k in dest_lower or k in query_lower for k in ["manali", "shimla", "goa", "kerala", "kashmir", "ladakh", "mumbai", "bangalore"]):
+        return False, (
+            f"### ⚠️ Budget Feasibility Advisory · {dest_clean}\n\n"
+            f"An overnight multi-day trip to **{dest_clean}** on a total budget of **₹{budget_num:,}** is not feasible.\n\n"
+            f"**Minimum Real-World Breakdown (3 Days / 2 Nights):**\n"
+            f"- **Intercity Bus / Train**: ₹1,200 – ₹2,500 round-trip.\n"
+            f"- **Hostel / Budget Homestay**: ₹700 – ₹1,200 per night (₹1,400 – ₹2,400 total).\n"
+            f"- **Daily Meals**: ~₹500 / day (₹1,500 total).\n"
+            f"- **Recommended Minimum Budget**: **₹4,500 – ₹7,000**.\n\n"
+            f"Please increase your budget ceiling or request a 1-day local excursion near {orig_clean}."
+        )
+
+    return True, ""
 
 
 # =========================
@@ -509,6 +654,41 @@ User request:
             "was selected as a safe fallback."
         )
 
+    # Check feasibility guardrail (impossible budgets, contradictory routes, zero budgets, etc.)
+    origin_to_check = str(constraints.get("origin", "")).strip() or explicit_origin or "Delhi"
+    dest_to_check = str(constraints.get("destination", "")).strip() or explicit_destination or "Destination"
+    budget_to_check = parse_budget_to_number(constraints.get("budget", "") or query)
+
+    is_feasible, feasibility_advisory = check_budget_feasibility(
+        origin=origin_to_check,
+        destination=dest_to_check,
+        budget_num=budget_to_check,
+        user_query=query,
+    )
+
+    if not is_feasible:
+        return {
+            "user_query": query,
+            "guardrail_allowed": False,
+            "guardrail_reason": feasibility_advisory,
+            "selected_agents": [],
+            "trip_constraints": constraints,
+            "supervisor_reasoning": feasibility_advisory,
+            "flight_results": "",
+            "train_results": "",
+            "bus_results": "",
+            "hotel_results": "",
+            "weather_results": "",
+            "budget_results": feasibility_advisory,
+            "itinerary": feasibility_advisory,
+            "approval_request": "",
+            "approved": False,
+            "human_feedback": "",
+            "final_response": feasibility_advisory,
+            "messages": [AIMessage(content=feasibility_advisory)],
+            "llm_calls": llm_calls,
+        }
+
     return {
         "user_query": query,
         "guardrail_allowed": True,
@@ -541,6 +721,8 @@ def guardrail_blocked_agent(state: TravelState):
     )
     return {
         "final_response": reason,
+        "itinerary": reason,
+        "budget_results": reason,
         "messages": [AIMessage(content=reason)],
     }
 
@@ -983,8 +1165,20 @@ CRITICAL BUDGET, GEOGRAPHY AND TRANSIT CONSTRAINTS:
    - Under NO circumstances should the total sum exceed {budget_limit}!
    - For an international trip with budget {budget_limit} (e.g. ₹2,00,000 for Japan), quote realistic Economy round-trip airfare (~₹52,000-₹58,000 total return for Delhi ↔ Tokyo, NOT ₹1,20,000 on Premium Economy!), 7 nights Stays (~₹65,000-₹75,000 total), Food & Dining (~₹25,000), Local Transit / JR Pass (~₹18,000), Activities (~₹15,000), and Visa/Buffer (~₹10,000) so that ALL items strictly sum up to <= {budget_limit}.
    - If the total budget is under ₹10,000 (e.g. ₹5,000 or ₹10,000 INR), recommend clean, verified budget homestays, GMVN/HPTDC lodges, or guesthouses costing under ₹1,500 - ₹2,000 per night. NEVER recommend luxury 5-star hotels that exceed the budget.
-2. Geographical Sanity & Realistic Durations:
-   - Calculate realistic overland distance: If distance is > 800 km (e.g. Chandigarh to Assam / Guwahati is ~2,050 km), do NOT describe an impossible 11-hour bus trip. A direct road journey of 2,050 km takes ~40-48 hours. Explicitly note the true overland duration or recommend direct train (e.g. Dibrugarh Express) or flight.
+2. Geographical Sanity, Multi-Leg Transit & Realistic Durations:
+   - For long-distance intercity bus journeys where NO single direct bus exists in reality (e.g. Chandigarh to Assam / Guwahati, distance > 800 km across multiple states):
+     * A direct single bus from Chandigarh to Assam does NOT exist in India.
+     * You MUST provide a Multi-Leg Connecting Bus Schedule in the Transit Information table with all intermediate transit stations and transfer hubs:
+       - Leg 1: Chandigarh ISBT Sector 43 ➜ New Delhi ISBT Kashmiri Gate (HRTC / CTU Volvo / Haryana Roadways, ~4.5 hrs, ~₹450-₹750)
+       - Delhi Transfer: Delhi Metro Yellow + Blue line (ISBT Kashmiri Gate ➜ ISBT Anand Vihar, ~30 mins, ₹40)
+       - Leg 2: New Delhi ISBT Anand Vihar ➜ Gorakhpur Bus Station (UPSRTC Janrath / AC Sleeper, ~12 hrs, ~₹1,100-₹1,450)
+       - Leg 3: Gorakhpur Bus Station ➜ Siliguri Tenzing Norgay Bus Terminus (BSRTC / NBSTC / Royal Cruiser, ~13 hrs, ~₹950-₹1,250)
+       - Leg 4: Siliguri Tenzing Norgay Terminus ➜ Guwahati ISBT Betkuchi, Assam (ASTC - Assam State Transport Corporation / Network Travels, ~10 hrs, ~₹750-₹950)
+     * Total Transit Time: ~42–48 hours continuous travel. Total bus fare: ~₹3,250 – ₹4,400.
+     * List all connecting legs as separate rows in the Transit Information table so the user sees every bus operator, departure station, dropping station, schedule, and individual leg fare!
+     * Health & Endurance Advisory: Explicitly warn the user that 44–48 hours of continuous bus travel across 5 states is grueling. Recommend the direct train (15904 Dibrugarh Express from Chandigarh directly to Guwahati, ~44 hrs, Sleeper ₹850, 3AC ₹2,250) or flight from Chandigarh (IXC) to Guwahati (GAU) (~4.5 hrs, ~₹6,500) as a vastly superior comfort alternative.
+   - For Day Trips / Same-Day Trips (e.g. 1-day trip, same-day return):
+     * Set accommodation to "Same-day return (No overnight stay required)" and ₹0 stay cost. Do NOT invent multi-night hotel bookings for a 1-day trip!
    - For Uttarakhand (Rishikesh, Dehradun, Haridwar): state the real bus service as "UTC (Uttarakhand Transport Corporation) Janrath / Volvo AC Express", boarding at ISBT Kashmiri Gate (Delhi), with realistic fares (₹450 - ₹750).
    - For Himachal Pradesh (Shimla, Manali): state the real bus service as "HRTC Himgaura AC Deluxe / HPTDC Volvo", boarding at ISBT Sector 43 (Chandigarh) or ISBT Kashmiri Gate (Delhi), fares (₹350 - ₹500).
    - For Assam (Guwahati): state the operator as "ASTC (Assam State Transport Corporation) Intercity Express".
@@ -1179,8 +1373,11 @@ Format the final answer beautifully using these sections:
 1. Trip Summary
 2. Flight Information (when requested, include airline, flight number, departure/arrival times, airfare)
 3. India Train Information (when requested, include train name, number, class, fare)
-4. India Bus Information (when requested, include a markdown table: | Bus Operator & Service | Boarding Station | Dropping Station | Departure Time | Arrival Time | Ticket Fare | Assigned Seat |)
-5. Hotel Suggestions (include a markdown table: | Accommodation Name | Location | Room Category | Nightly Rate | Check-In & Dining | Key Amenities |)
+4. India Bus Information (when overland/bus travel is requested:
+   - For direct trips: include operator, stations, departure/arrival times, fare, seat.
+   - For long-distance routes requiring connecting buses (e.g. Chandigarh to Assam / Guwahati): you MUST include all connecting legs in the table with distinct boarding/dropping stations across each transfer hub, and provide a health/comfort note with the direct train / flight alternative).
+   - Markdown table: | Bus Operator & Service | Boarding Station | Dropping Station | Departure Time | Arrival Time | Ticket Fare | Assigned Seat |
+5. Hotel Suggestions (include a markdown table: | Accommodation Name | Location | Room Category | Nightly Rate | Check-In & Dining | Key Amenities |. If 1-day/same-day trip, state 'Same-day return (No overnight stay required)' and ₹0 stay cost).
 6. Weather Information (include a 3-5 day markdown table: | Day / Date | Condition | Temperature | Recommended Packing | with distinct forecast per day)
 7. Day-by-Day Itinerary (rich narrative breakdown with landmarks authentic to destination)
 8. Estimated Budget (include a markdown table: | Category | Estimated Cost (₹) | Notes | with rows for Bus/Transit, Accommodation, Food, Sightseeing, Contingency)

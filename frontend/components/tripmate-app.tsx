@@ -30,6 +30,7 @@ import {
   Moon,
   Plane,
   Route,
+  ShieldAlert,
   ShieldCheck,
   Sparkles,
   Sun,
@@ -419,6 +420,68 @@ function PlanCanvas({ state, isDark = true }: { state: TripState; isDark?: boole
     await navigator.clipboard.writeText(activeContent || "");
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1500);
+  }
+
+  const isAdvisory = state.guardrail_allowed === false || activeContent.includes("### ⚠️");
+
+  if (isAdvisory) {
+    return (
+      <section className="plan-canvas">
+        <div className="section-heading">
+          <div>
+            <span className="eyebrow" style={{ color: "#f59e0b" }}>Reality Check &amp; Feasibility Notice</span>
+            <h2>Travel Advisory &amp; Real Costs</h2>
+          </div>
+          <div className="heading-actions">
+            <button className="icon-button labeled" onClick={copyPlan}>
+              {copied ? <Check size={16} /> : <Copy size={16} />}
+              {copied ? "Copied" : "Copy Advisory"}
+            </button>
+          </div>
+        </div>
+
+        <div
+          style={{
+            margin: "12px 0 20px 0",
+            padding: "16px 20px",
+            borderRadius: "12px",
+            background: "linear-gradient(135deg, rgba(245, 158, 11, 0.08), rgba(239, 68, 68, 0.05))",
+            border: "1px solid rgba(245, 158, 11, 0.3)",
+            display: "flex",
+            alignItems: "center",
+            gap: "14px",
+          }}
+        >
+          <div
+            style={{
+              width: "40px",
+              height: "40px",
+              borderRadius: "10px",
+              background: "rgba(245, 158, 11, 0.15)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "#f59e0b",
+              flexShrink: 0,
+            }}
+          >
+            <ShieldAlert size={22} />
+          </div>
+          <div>
+            <h4 style={{ margin: 0, fontSize: "0.95rem", fontWeight: 700, color: "var(--text)" }}>
+              Financial &amp; Route Reality Guardrail
+            </h4>
+            <p style={{ margin: "2px 0 0 0", fontSize: "0.82rem", color: "var(--text-muted)" }}>
+              The requested parameters cannot be safely booked in the physical world. Review the verified breakdown and alternative recommendations below.
+            </p>
+          </div>
+        </div>
+
+        <article className="markdown plan-document" style={{ maxWidth: "100%" }}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{activeContent}</ReactMarkdown>
+        </article>
+      </section>
+    );
   }
 
   return (

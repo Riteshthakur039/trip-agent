@@ -100,6 +100,15 @@ function extractDynamicTransit({
 
   let operator = "", boardingPoint = "", droppingPoint = "", depTime = "", arrTime = "", busFare = "", seatNumber = "";
 
+  const legs: Array<{
+    service: string;
+    from: string;
+    to: string;
+    depTime: string;
+    arrTime: string;
+    fare: string;
+  }> = [];
+
   // Strategy A: Parse Table under Transit Information section
   const transitSectionMatch = combined.match(/(?:Transit\s*Information|Bus\s*Information|Flight\s*Information)[\s\S]*?(?:(?:2\.\s*Hotel|\n\s*\n\s*[2-9]\.|$))/i);
   const transitBlock = transitSectionMatch ? transitSectionMatch[0] : combined;
@@ -119,33 +128,76 @@ function extractDynamicTransit({
     }
   }
 
-  if (headerIdx !== -1 && lines[headerIdx + 1]) {
-    let rowIdx = headerIdx + 1;
-    if (/^[|\-\s:]+$/.test(lines[rowIdx]) && lines[rowIdx + 1]) {
-      rowIdx++;
-    }
-    const cols = lines[rowIdx].split(/\t| {2,}|\|/).map(c => c.trim()).filter(Boolean);
-    for (let c = 0; c < headers.length && c < cols.length; c++) {
-      const h = headers[c].toLowerCase();
-      const val = cols[c];
-      if (/carrier|airline|operator|service/i.test(h)) operator = val;
-      else if (/departure\s*airport|boarding|station|origin/i.test(h)) boardingPoint = val;
-      else if (/arrival\s*airport|dropping|arrival\s*station|destination/i.test(h)) droppingPoint = val;
-      else if (/departure\s*time|time\s*\(local\)|departs|time/i.test(h)) {
-        if (val.includes("→") || val.includes("->")) {
-          const parts = val.split(/→|->/);
-          depTime = parts[0].trim();
-          if (parts[1]) arrTime = parts[1].replace(/\([^)]*\)/g, "").trim();
-        } else {
-          depTime = val;
+  if (headerIdx !== -1) {
+    for (let r = headerIdx + 1; r < lines.length; r++) {
+      if (/^[|\-\s:]+$/.test(lines[r])) continue;
+      if (!lines[r].includes("|") && !lines[r].includes("\t") && !/\d/.test(lines[r])) break;
+
+      const cols = lines[r].split(/\t| {2,}|\|/).map(c => c.trim()).filter(Boolean);
+      if (cols.length < 2) continue;
+
+      let rOp = "", rFrom = "", rTo = "", rDep = "", rArr = "", rFare = "", rSeat = "";
+
+      for (let c = 0; c < headers.length && c < cols.length; c++) {
+        const h = headers[c].toLowerCase();
+        const val = cols[c];
+        if (/carrier|airline|operator|service/i.test(h)) rOp = val;
+        else if (/departure\s*airport|boarding|station|origin/i.test(h)) rFrom = val;
+        else if (/arrival\s*airport|dropping|arrival\s*station|destination/i.test(h)) rTo = val;
+        else if (/departure\s*time|time\s*\(local\)|departs|time/i.test(h)) {
+          if (val.includes("→") || val.includes("->")) {
+            const parts = val.split(/→|->/);
+            rDep = parts[0].trim();
+            if (parts[1]) rArr = parts[1].replace(/\([^)]*\)/g, "").trim();
+          } else {
+            rDep = val;
+          }
+        } else if (/arrival\s*time|arrives/i.test(h)) {
+          rArr = val;
+        } else if (/fare|cost|price/i.test(h)) {
+          const digits = val.replace(/[^0-9]/g, "");
+          if (digits) rFare = `₹${parseInt(digits, 10).toLocaleString("en-IN")}`;
+        } else if (/seat|berth/i.test(h)) {
+          rSeat = val;
         }
-      } else if (/arrival\s*time|arrives/i.test(h)) {
-        arrTime = val;
-      } else if (/fare|cost|price/i.test(h)) {
-        const digits = val.replace(/[^0-9]/g, "");
-        if (digits) busFare = `₹${parseInt(digits, 10).toLocaleString("en-IN")} / passenger`;
-      } else if (/seat|berth/i.test(h)) {
-        seatNumber = val;
+      }
+
+      if (/total/i.test(cols[0]) || /total/i.test(rOp)) {
+        if (!busFare && rFare) busFare = `${rFare} / passenger`;
+        continue;
+      }
+
+      if (rOp || rFrom || rTo) {
+        legs.push({
+          service: rOp || `Connecting Service ${legs.length + 1}`,
+          from: rFrom || (legs.length === 0 ? origin : `Station ${legs.length}`),
+          to: rTo || destination,
+          depTime: rDep || "07:00 AM",
+          arrTime: rArr || "06:00 PM",
+          fare: rFare || "₹450",
+        });
+        if (!seatNumber && rSeat) seatNumber = rSeat;
+      }
+    }
+  }
+
+  if (legs.length > 0) {
+    if (legs.length === 1) {
+      operator = legs[0].service;
+      boardingPoint = legs[0].from;
+      droppingPoint = legs[0].to;
+      depTime = legs[0].depTime;
+      arrTime = legs[0].arrTime;
+      if (legs[0].fare) busFare = `${legs[0].fare} / passenger`;
+    } else {
+      operator = legs.map(l => l.service.split(" ")[0].replace(/[^A-Za-z]/g, "")).filter(Boolean).slice(0, 4).join(" ➜ ");
+      boardingPoint = legs[0].from;
+      droppingPoint = legs[legs.length - 1].to;
+      depTime = legs[0].depTime;
+      arrTime = legs[legs.length - 1].arrTime;
+      const totalLegFares = legs.reduce((acc, l) => acc + (parseInt(l.fare.replace(/[^0-9]/g, ""), 10) || 0), 0);
+      if (totalLegFares > 0) {
+        busFare = `₹${totalLegFares.toLocaleString("en-IN")} (Total Connecting Transit)`;
       }
     }
   }
@@ -308,6 +360,7 @@ function extractDynamicTransit({
     transitType,
     flightTerminal,
     boardingZone,
+    legs,
   };
 }
 
@@ -648,6 +701,66 @@ export function FlightBoardingPass({
               <strong style={{ color: "var(--accent)" }}>{transit.busFare} (In Budget)</strong>
             </div>
           </div>
+
+          {transit.legs && transit.legs.length > 1 && (
+            <div
+              style={{
+                marginTop: "14px",
+                padding: "10px 12px",
+                borderRadius: "8px",
+                background: "rgba(16, 185, 129, 0.06)",
+                border: "1px dashed rgba(16, 185, 129, 0.25)",
+                display: "flex",
+                flexDirection: "column",
+                gap: "6px",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: "0.68rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "#10b981" }}>
+                  Multi-Station Connecting Schedule ({transit.legs.length} Intercity Buses)
+                </span>
+                <span style={{ fontSize: "0.72rem", color: "var(--accent)", fontWeight: 700 }}>
+                  {transit.busFare}
+                </span>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
+                {transit.legs.map((leg, idx) => (
+                  <div
+                    key={idx}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      fontSize: "0.75rem",
+                      padding: "4px 8px",
+                      borderRadius: "6px",
+                      background: "rgba(255, 255, 255, 0.04)",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <span
+                        style={{
+                          fontSize: "0.62rem",
+                          fontWeight: 700,
+                          padding: "1px 5px",
+                          borderRadius: "4px",
+                          background: "rgba(16, 185, 129, 0.18)",
+                          color: "#10b981",
+                        }}
+                      >
+                        Leg {idx + 1}
+                      </span>
+                      <strong>{leg.from} ➜ {leg.to}</strong>
+                    </div>
+                    <div style={{ display: "flex", gap: "8px", color: "var(--text-muted)" }}>
+                      <small>{leg.service}</small>
+                      <small style={{ fontWeight: 600, color: "var(--text)" }}>{leg.fare}</small>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="boarding-pass__stub">
