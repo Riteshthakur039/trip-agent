@@ -361,11 +361,27 @@ function parseTripProfile(state: TripState) {
     "amritsar",
     "pune",
   ];
-  const isOverland =
-    overlandPlaces.includes(destination.toLowerCase()) ||
-    overlandPlaces.includes(origin.toLowerCase()) ||
-    Boolean(state.bus_results || state.train_results) ||
-    (!state.flight_results && !textBlob.includes("flight") && !textBlob.includes("airplane"));
+  const internationalKeywords = [
+    "japan", "tokyo", "kyoto", "osaka", "singapore", "dubai", "thailand", "bangkok",
+    "bali", "indonesia", "vietnam", "paris", "london", "europe", "usa", "america",
+    "maldives", "malaysia", "switzerland", "nepal", "bhutan", "sri lanka", "korea", "seoul"
+  ];
+  const isInternational = internationalKeywords.some(
+    (k) => destination.toLowerCase().includes(k) || origin.toLowerCase().includes(k) || textBlob.includes(k)
+  );
+
+  let isOverland = false;
+  if (!isInternational) {
+    const hasLiveBusOrTrain =
+      Boolean(state.bus_results && /(?:ASTC|UTC|HRTC|Janrath|Volvo|Bus\s*Operator)/i.test(state.bus_results)) ||
+      Boolean(state.train_results && /(?:Express|Rajdhani|Shatabdi|Train\s*No)/i.test(state.train_results));
+
+    isOverland =
+      overlandPlaces.includes(destination.toLowerCase()) ||
+      overlandPlaces.includes(origin.toLowerCase()) ||
+      hasLiveBusOrTrain ||
+      (!textBlob.includes("flight") && !textBlob.includes("airplane") && (textBlob.includes("bus") || textBlob.includes("train")));
+  }
 
   return { origin, destination, budget, isOverland };
 }

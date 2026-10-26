@@ -69,7 +69,7 @@ if not GROQ_API_KEY:
 llm = ChatGroq(
     model=GROQ_MODEL,
     api_key=GROQ_API_KEY,
-    max_tokens=1600,
+    max_tokens=4000,
     reasoning_effort="low",
 )
 
@@ -981,7 +981,7 @@ CRITICAL BUDGET, GEOGRAPHY AND TRANSIT CONSTRAINTS:
    - The user's total budget ceiling is {budget_limit}.
    - The MATHEMATICAL SUM of all items in the "Estimated Budget" table MUST BE LESS THAN OR EQUAL TO {budget_limit}.
    - Under NO circumstances should the total sum exceed {budget_limit}!
-   - For an international trip with budget {budget_limit} (e.g. ₹2,00,000 for Japan), allocate realistic costs across Return Flights (e.g. ~₹55,000-₹65,000), 7 nights Stays (e.g. ~₹65,000-₹75,000), Food & Dining (e.g. ~₹20,000), Local Transit (e.g. ~₹15,000), Activities (e.g. ~₹15,000), and Visa/Buffer (~₹10,000) so they sum up to <= {budget_limit}.
+   - For an international trip with budget {budget_limit} (e.g. ₹2,00,000 for Japan), quote realistic Economy round-trip airfare (~₹52,000-₹58,000 total return for Delhi ↔ Tokyo, NOT ₹1,20,000 on Premium Economy!), 7 nights Stays (~₹65,000-₹75,000 total), Food & Dining (~₹25,000), Local Transit / JR Pass (~₹18,000), Activities (~₹15,000), and Visa/Buffer (~₹10,000) so that ALL items strictly sum up to <= {budget_limit}.
    - If the total budget is under ₹10,000 (e.g. ₹5,000 or ₹10,000 INR), recommend clean, verified budget homestays, GMVN/HPTDC lodges, or guesthouses costing under ₹1,500 - ₹2,000 per night. NEVER recommend luxury 5-star hotels that exceed the budget.
 2. Geographical Sanity & Realistic Durations:
    - Calculate realistic overland distance: If distance is > 800 km (e.g. Chandigarh to Assam / Guwahati is ~2,050 km), do NOT describe an impossible 11-hour bus trip. A direct road journey of 2,050 km takes ~40-48 hours. Explicitly note the true overland duration or recommend direct train (e.g. Dibrugarh Express) or flight.
@@ -992,8 +992,10 @@ CRITICAL BUDGET, GEOGRAPHY AND TRANSIT CONSTRAINTS:
 3. Structured Output Tables for Visual Cards:
    Include these explicit structured Markdown tables:
    - **Transit Information**:
+     For overland / bus transit:
      | Bus Operator & Service | Boarding Station | Dropping Station | Departure Time | Arrival Time | Ticket Fare | Assigned Seat |
-     (Or for flights: Departure Airport, Arrival Airport, Carrier, Timings, Fare)
+     For flight transit:
+     | Carrier / Airline | Departure Airport | Arrival Airport | Departure Time | Arrival Time | Ticket Fare | Assigned Seat |
    - **Hotel Suggestions**:
      | Accommodation Name | Location | Room Category | Nightly Rate | Check-In & Dining | Key Amenities |
      (Include amenities like Free Wi-Fi, shared kitchen, 24-h reception, hot water geyser, river/mountain view)
@@ -1002,9 +1004,9 @@ CRITICAL BUDGET, GEOGRAPHY AND TRANSIT CONSTRAINTS:
      (Provide 3 to 5 distinct days with specific conditions and tailored packing tips)
    - **Estimated Budget**:
      | Category | Estimated Cost (₹) | Notes |
-     (Include Flights/Transit, Accommodation, Food & Dining, Local Transport, Activities, Contingency/Visa - with all amounts strictly summing within {budget_limit})
+     (Include Flights/Transit, Accommodation, Food & Dining, Local Transport, Activities, Contingency/Visa - ensure the table is complete with all rows and sums strictly within {budget_limit})
 
-Create a clear draft that is ready for human review.
+Create a clear, complete draft that is ready for human review. Ensure every section and table is fully completed without truncation.
 """
 
     try:

@@ -49,6 +49,26 @@ function hashString(str: string): number {
   return Math.abs(hash);
 }
 
+function getAirportCode(cityName: string): string {
+  const lower = (cityName || "").toLowerCase();
+  if (lower.includes("delhi")) return "DEL";
+  if (lower.includes("tokyo") || lower.includes("japan")) return "NRT";
+  if (lower.includes("osaka") || lower.includes("kansai")) return "KIX";
+  if (lower.includes("kyoto")) return "UKY";
+  if (lower.includes("mumbai") || lower.includes("bombay")) return "BOM";
+  if (lower.includes("bengaluru") || lower.includes("bangalore")) return "BLR";
+  if (lower.includes("chennai")) return "MAA";
+  if (lower.includes("kolkata")) return "CCU";
+  if (lower.includes("hyderabad")) return "HYD";
+  if (lower.includes("singapore")) return "SIN";
+  if (lower.includes("dubai")) return "DXB";
+  if (lower.includes("london")) return "LHR";
+  if (lower.includes("paris")) return "CDG";
+  if (lower.includes("bangkok")) return "BKK";
+  if (lower.includes("bali")) return "DPS";
+  return cityName.replace(/[^a-zA-Z]/g, "").slice(0, 3).toUpperCase() || "INT";
+}
+
 // -----------------------------------------------------------------------------
 // Dynamic Transit Extractor
 // Extracts live bus/flight operator, timings, terminals, fare & seat from agent data
@@ -60,6 +80,7 @@ function extractDynamicTransit({
   origin = "New Delhi",
   destination = "Uttarakhand",
   totalBudget = "₹10,000",
+  isOverland = true,
 }: {
   itineraryText?: string;
   busData?: string;
@@ -67,6 +88,7 @@ function extractDynamicTransit({
   origin?: string;
   destination?: string;
   totalBudget?: string;
+  isOverland?: boolean;
 }) {
   const combined = `${itineraryText}\n${busData}\n${flightData}`
     .replace(/[\u2010-\u2015\u2212]/g, "-")
@@ -79,7 +101,7 @@ function extractDynamicTransit({
   let operator = "", boardingPoint = "", droppingPoint = "", depTime = "", arrTime = "", busFare = "", seatNumber = "";
 
   // Strategy A: Parse Table under Transit Information section
-  const transitSectionMatch = combined.match(/(?:Transit\s*Information|Bus\s*Information)[\s\S]*?(?:(?:2\.\s*Hotel|\n\s*\n\s*[2-9]\.|$))/i);
+  const transitSectionMatch = combined.match(/(?:Transit\s*Information|Bus\s*Information|Flight\s*Information)[\s\S]*?(?:(?:2\.\s*Hotel|\n\s*\n\s*[2-9]\.|$))/i);
   const transitBlock = transitSectionMatch ? transitSectionMatch[0] : combined;
 
   const lines = transitBlock.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
@@ -88,7 +110,9 @@ function extractDynamicTransit({
 
   for (let i = 0; i < lines.length; i++) {
     const cols = lines[i].split(/\t| {2,}|\|/).map(c => c.trim()).filter(Boolean);
-    if (cols.some(c => /operator|carrier/i.test(c)) && cols.some(c => /boarding|station|from/i.test(c))) {
+    const hasCarrier = cols.some(c => /operator|carrier|airline|service|flight/i.test(c));
+    const hasStation = cols.some(c => /boarding|station|airport|from|departs|segment/i.test(c));
+    if (hasCarrier || (cols.some(c => /flight/i.test(c)) && hasStation)) {
       headerIdx = i;
       headers = cols;
       break;
@@ -104,27 +128,44 @@ function extractDynamicTransit({
     for (let c = 0; c < headers.length && c < cols.length; c++) {
       const h = headers[c].toLowerCase();
       const val = cols[c];
-      if (/operator|service/i.test(h)) operator = val;
-      else if (/boarding/i.test(h)) boardingPoint = val;
-      else if (/dropping|arrival\s*station/i.test(h)) droppingPoint = val;
-      else if (/departure\s*time|departs/i.test(h)) depTime = val;
-      else if (/arrival\s*time|arrives/i.test(h)) arrTime = val;
-      else if (/fare|cost|price/i.test(h)) {
+      if (/carrier|airline|operator|service/i.test(h)) operator = val;
+      else if (/departure\s*airport|boarding|station|origin/i.test(h)) boardingPoint = val;
+      else if (/arrival\s*airport|dropping|arrival\s*station|destination/i.test(h)) droppingPoint = val;
+      else if (/departure\s*time|time\s*\(local\)|departs|time/i.test(h)) {
+        if (val.includes("→") || val.includes("->")) {
+          const parts = val.split(/→|->/);
+          depTime = parts[0].trim();
+          if (parts[1]) arrTime = parts[1].replace(/\([^)]*\)/g, "").trim();
+        } else {
+          depTime = val;
+        }
+      } else if (/arrival\s*time|arrives/i.test(h)) {
+        arrTime = val;
+      } else if (/fare|cost|price/i.test(h)) {
         const digits = val.replace(/[^0-9]/g, "");
         if (digits) busFare = `₹${parseInt(digits, 10).toLocaleString("en-IN")} / passenger`;
-      } else if (/seat|berth/i.test(h)) seatNumber = val;
+      } else if (/seat|berth/i.test(h)) {
+        seatNumber = val;
+      }
     }
   }
 
   // Strategy B: Key-Value fallback if table was not present or field was header
-  if (!operator || /^(boarding|dropping|service|operator)$/i.test(operator)) {
-    const opLine = combined.match(/(?:Bus\s*Operator(?:\s*&\s*Service)?|Carrier|Operator)\s*[:|•\-\t]?\s*([A-Za-z0-9\s()/\-–"“”]+?)(?=\s+(?:Boarding|Departure|Fare|\n|$))/i) ||
-      combined.match(/\b(ASTC|HRTC|UTC|UPRTC|PRTC|CTU|RSRTC|KSRTC|GSRTC|IndiGo|Air India|Vistara)[A-Za-z\s()/\-–]*/i);
-    operator = opLine ? opLine[1].replace(/[:•\-|“"”]/g, "").trim() : "";
+  if (!operator || /^(boarding|dropping|service|operator|carrier|airline)$/i.test(operator)) {
+    if (!isOverland) {
+      const airMatch = combined.match(/\b(Singapore Airlines|Air Japan|All Nippon Airways|ANA|Japan Airlines|JAL|Air India|IndiGo|Vistara|Emirates|Qatar Airways|Cathay Pacific|Thai Airways|Malaysia Airlines)\b/i);
+      operator = airMatch ? airMatch[1] : "Singapore Airlines";
+    } else {
+      const opLine = combined.match(/(?:Bus\s*Operator(?:\s*&\s*Service)?|Carrier|Operator)\s*[:|•\-\t]?\s*([A-Za-z0-9\s()/\-–"“”]+?)(?=\s+(?:Boarding|Departure|Fare|\n|$))/i) ||
+        combined.match(/\b(ASTC|HRTC|UTC|UPRTC|PRTC|CTU|RSRTC|KSRTC|GSRTC)[A-Za-z\s()/\-–]*/i);
+      operator = opLine ? opLine[1].replace(/[:•\-|“"”]/g, "").trim() : "";
+    }
   }
 
   if (!operator) {
-    if (destLower.includes("uttar") || destLower.includes("rishikesh") || destLower.includes("dehradun")) {
+    if (!isOverland) {
+      operator = `${origin.split("(")[0].trim()} to ${destination.split("(")[0].trim()} Airways`;
+    } else if (destLower.includes("uttar") || destLower.includes("rishikesh") || destLower.includes("dehradun")) {
       operator = "UTC Janrath / Volvo AC Express";
     } else if (destLower.includes("shimla") || destLower.includes("manali") || destLower.includes("himachal")) {
       operator = "HRTC Himgaura AC Deluxe";
@@ -136,38 +177,53 @@ function extractDynamicTransit({
   }
 
   if (!boardingPoint || /^(dropping|arrival|station)$/i.test(boardingPoint)) {
-    const bLine = combined.match(/(?:Boarding\s*(?:Station|Platform|Point)|Departing\s*from)\s*[:|•\-\t]?\s*([^\n\r|\t]+?)(?=\s*(?:Dropping|Departure|Arrival|\n|$))/i) ||
-      clean.match(/\b(ISBT[A-Za-z0-9\s,()/\-–]+?)(?=\s+(?:Arrival|Dropping|Fare|\n|$))/i);
-    boardingPoint = bLine ? bLine[1].replace(/[:•\-|]/g, "").trim() : "";
+    if (!isOverland) {
+      boardingPoint = origLower.includes("delhi")
+        ? "Indira Gandhi International Airport (DEL T3), New Delhi"
+        : `${origin.split("(")[0].trim()} International Airport`;
+    } else {
+      const bLine = combined.match(/(?:Boarding\s*(?:Station|Platform|Point)|Departing\s*from)\s*[:|•\-\t]?\s*([^\n\r|\t]+?)(?=\s*(?:Dropping|Departure|Arrival|\n|$))/i) ||
+        clean.match(/\b(ISBT[A-Za-z0-9\s,()/\-–]+?)(?=\s+(?:Arrival|Dropping|Fare|\n|$))/i);
+      boardingPoint = bLine ? bLine[1].replace(/[:•\-|]/g, "").trim() : "";
+    }
   }
 
   if (!boardingPoint) {
     if (origLower.includes("delhi")) {
-      boardingPoint = "ISBT Kashmiri Gate (Bay 7/8), New Delhi";
+      boardingPoint = isOverland ? "ISBT Kashmiri Gate (Bay 7/8), New Delhi" : "Indira Gandhi International Airport (DEL T3)";
     } else if (origLower.includes("chandigarh")) {
       boardingPoint = "ISBT Sector 43, Chandigarh";
     } else {
-      boardingPoint = `${origin} Intercity Bus Terminal`;
+      boardingPoint = `${origin} Intercity Terminal`;
     }
   }
 
   if (!droppingPoint) {
-    const dLine = combined.match(/(?:Dropping\s*(?:Station|Point)|Arrival\s*Station)\s*[:|•\-\t]?\s*([^\n\r|\t]+)/i);
-    if (dLine) droppingPoint = dLine[1].replace(/[:•\-|]/g, "").trim();
+    if (!isOverland) {
+      if (destLower.includes("japan") || destLower.includes("tokyo")) {
+        droppingPoint = "Narita International Airport (NRT), Tokyo";
+      } else {
+        droppingPoint = `${destination.split("(")[0].trim()} International Airport`;
+      }
+    } else {
+      const dLine = combined.match(/(?:Dropping\s*(?:Station|Point)|Arrival\s*Station)\s*[:|•\-\t]?\s*([^\n\r|\t]+)/i);
+      if (dLine) droppingPoint = dLine[1].replace(/[:•\-|]/g, "").trim();
+      else droppingPoint = `${destination.split("(")[0].trim()} Central Bus Terminal`;
+    }
   }
 
   if (!depTime) {
     const depMatch = combined.match(/(?:Departure\s*Time|Departs?)\s*[:|•\-\t]?\s*([0-9]{1,2}:[0-9]{2}\s*(?:AM|PM|am|pm)?)/i);
-    depTime = depMatch ? depMatch[1].trim() : "06:30 AM";
+    depTime = depMatch ? depMatch[1].trim() : "07:20 AM";
   }
 
   if (!arrTime) {
     const arrMatch = combined.match(/(?:Arrival(?:\s*at\s*[A-Za-z]+|\s*Time)?|Arrives?)\s*[:|•\-\t]?\s*([0-9]{1,2}:[0-9]{2}\s*(?:AM|PM|am|pm)?)/i);
-    arrTime = arrMatch ? arrMatch[1].trim() : "05:30 PM";
+    arrTime = arrMatch ? arrMatch[1].trim() : "05:45 PM";
   }
 
   if (!busFare) {
-    const fareMatch = combined.match(/(?:Ticket\s*Fare(?:\s*\([^)]*\))?|Bus\s*Fare|Fare|Bus\s*Cost)\s*[:|•\-\t]?\s*(?:₹|Rs\.?|INR)?\s*([\d\s,]+)/i);
+    const fareMatch = combined.match(/(?:Ticket\s*Fare(?:\s*\([^)]*\))?|Airfare|Flight\s*Fare|Bus\s*Fare|Fare)\s*[:|•\-\t]?\s*(?:₹|Rs\.?|INR)?\s*([\d\s,]+)/i);
     if (fareMatch) {
       const digits = fareMatch[1].replace(/[^0-9]/g, "");
       if (digits) busFare = `₹${parseInt(digits, 10).toLocaleString("en-IN")} / passenger`;
@@ -176,24 +232,39 @@ function extractDynamicTransit({
   if (!busFare) {
     const rawClean = String(totalBudget || "").replace(/[^0-9]/g, "");
     const budgetNum = rawClean ? parseInt(rawClean, 10) : 10000;
-    const estFare = Math.max(350, Math.round(budgetNum * 0.08));
+    const estFare = isOverland
+      ? Math.max(350, Math.round(budgetNum * 0.08))
+      : Math.max(25000, Math.round(budgetNum * 0.28));
     busFare = `₹${estFare.toLocaleString("en-IN")} / passenger`;
   }
 
   const seed = hashString(`${origin}-${destination}-${totalBudget}`);
-  const serviceCode = operator.split(" ")[0].replace(/[^A-Za-z]/g, "").toUpperCase() || "STATE";
-  const busNumber = `Bus No. ${serviceCode}-${String((seed % 89) + 10).padStart(2, "0")}-${String((seed % 8999) + 1000)}`;
+  const serviceCode = operator.split(" ")[0].replace(/[^A-Za-z]/g, "").toUpperCase() || (isOverland ? "STATE" : "AIR");
+
+  let flightNumber = "";
+  if (/singapore/i.test(operator)) flightNumber = "Flight SQ-638";
+  else if (/ana|nippon/i.test(operator)) flightNumber = "Flight NH-828";
+  else if (/jal|japan\s*air/i.test(operator)) flightNumber = "Flight JL-740";
+  else if (/india/i.test(operator)) flightNumber = "Flight AI-306";
+  else if (/indigo/i.test(operator)) flightNumber = "Flight 6E-1451";
+  else flightNumber = `Flight ${serviceCode.slice(0, 2) || "AI"}-${String((seed % 899) + 100)}`;
+
+  const busNumber = isOverland
+    ? `Bus No. ${serviceCode}-${String((seed % 89) + 10).padStart(2, "0")}-${String((seed % 8999) + 1000)}`
+    : flightNumber;
 
   if (!seatNumber) {
     const seatMatch = combined.match(/(?:Seat|Berth)\s*(?:Number|No\.?)?\s*[:|•\-\t]?\s*([0-9]{1,2}[A-F]?|\bSeat\s*[0-9]{1,2}[A-F]?)/i);
-    seatNumber = seatMatch ? seatMatch[1].trim() : `Seat ${(seed % 28) + 1} (Window Side)`;
+    seatNumber = seatMatch ? seatMatch[1].trim() : (isOverland ? `Seat ${(seed % 28) + 1} (Window Side)` : `Seat ${(seed % 32) + 1}A (Window Side)`);
   }
   if (!/seat/i.test(seatNumber)) seatNumber = `Seat ${seatNumber}`;
 
   const ticketRef = `TKT-${serviceCode}-${String(seed % 899999 + 100000)}`;
 
   let cabinBadge = "";
-  if (/non-?ac|sleeper/i.test(combined)) {
+  if (!isOverland) {
+    cabinBadge = /business/i.test(combined) ? "Business Class Airway" : "Economy Class Corridor";
+  } else if (/non-?ac|sleeper/i.test(combined)) {
     cabinBadge = "Intercity Sleeper (Non-AC)";
   } else if (/volvo/i.test(operator) || /volvo/i.test(clean)) {
     cabinBadge = "2+2 High-Deck Volvo AC";
@@ -207,8 +278,19 @@ function extractDynamicTransit({
 
   const transitType = `${origin.split('(')[0].trim()} to ${destination.split('(')[0].trim()} Transit Corridor`;
 
-  const flightTerminalMatch = combined.match(/(?:Terminal|Gate)\s*[:|•\-\t]?\s*([^\n\r|]+)/i);
-  const flightTerminal = flightTerminalMatch ? flightTerminalMatch[1].trim() : `Terminal ${(seed % 3) + 1} (Gate ${(seed % 18) + 1})`;
+  let flightTerminal = "";
+  const flightTerminalMatch = clean.match(/(?:Terminal|Gate)\s*[:|•\-\t]\s*([T\d\sA-Za-z]+?(?=\s+Gate|\n|,|$))/i);
+  if (flightTerminalMatch) {
+    const rawTerm = flightTerminalMatch[1].trim();
+    if (!/uvx|python|terminal,|error|install|run/i.test(rawTerm) && rawTerm.length < 30) {
+      flightTerminal = rawTerm;
+    }
+  }
+  if (!flightTerminal) {
+    flightTerminal = origLower.includes("delhi")
+      ? `Terminal 3 (Gate ${(seed % 20) + 1})`
+      : `Terminal ${(seed % 3) + 1} (Gate ${(seed % 20) + 1})`;
+  }
   const boardingZone = `Zone ${(seed % 3) + 1}`;
 
   return {
@@ -219,6 +301,7 @@ function extractDynamicTransit({
     arrTime,
     busFare,
     busNumber,
+    flightNumber,
     seatNumber,
     ticketRef,
     cabinBadge,
@@ -484,8 +567,9 @@ export function FlightBoardingPass({
         origin,
         destination,
         totalBudget,
+        isOverland,
       }),
-    [itineraryText, busData, flightData, origin, destination, totalBudget]
+    [itineraryText, busData, flightData, origin, destination, totalBudget, isOverland]
   );
 
   if (isOverland) {
@@ -582,8 +666,8 @@ export function FlightBoardingPass({
   }
 
   // Flight Mode
-  const fromCode = origin.slice(0, 3).toUpperCase();
-  const toCode = destination.slice(0, 3).toUpperCase();
+  const fromCode = getAirportCode(origin);
+  const toCode = getAirportCode(destination);
 
   return (
     <div className="boarding-pass-card">
@@ -593,7 +677,7 @@ export function FlightBoardingPass({
             <span className="airline-icon"><Plane size={18} /></span>
             <div>
               <strong>{transit.operator || "Scheduled Flight Corridor"}</strong>
-              <small>{transit.busNumber}</small>
+              <small>{transit.flightNumber || transit.busNumber}</small>
             </div>
           </div>
           <span className="cabin-badge">Confirmed Flight</span>
